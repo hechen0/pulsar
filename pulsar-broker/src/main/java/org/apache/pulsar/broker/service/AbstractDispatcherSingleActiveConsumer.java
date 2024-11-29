@@ -168,6 +168,7 @@ public abstract class AbstractDispatcherSingleActiveConsumer extends AbstractBas
             return CompletableFuture.completedFuture(null);
         }
 
+        // hn 判断订阅类型 是否当前有活跃consumer 有的话直接拒绝新consumer
         if (subscriptionType == SubType.Exclusive && !consumers.isEmpty()) {
             Consumer actConsumer = getActiveConsumer();
             if (actConsumer != null) {

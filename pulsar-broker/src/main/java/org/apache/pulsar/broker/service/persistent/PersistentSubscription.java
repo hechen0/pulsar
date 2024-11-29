@@ -239,6 +239,7 @@ public class PersistentSubscription extends AbstractSubscription {
                     return FutureUtil.failedFuture(new SubscriptionFencedException("Subscription is fenced"));
                 }
 
+                // hn 根据订阅类型subType创建不同的dispatcher
                 if (dispatcher == null || !dispatcher.isConsumerConnected()) {
                     Dispatcher previousDispatcher = null;
                     switch (consumer.subType()) {
