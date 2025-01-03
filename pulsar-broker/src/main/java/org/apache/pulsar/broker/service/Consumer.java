@@ -978,6 +978,7 @@ public class Consumer {
         stats.unackedMessages = unackedMessages;
         stats.blockedConsumerOnUnackedMsgs = blockedConsumerOnUnackedMsgs;
         stats.avgMessagesPerEntry = getAvgMessagesPerEntry();
+        stats.consumerName = consumerName;
         if (readPositionWhenJoining != null) {
             stats.readPositionWhenJoining = readPositionWhenJoining.toString();
         }
