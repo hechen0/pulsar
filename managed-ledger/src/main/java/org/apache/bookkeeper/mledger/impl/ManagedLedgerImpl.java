@@ -3506,6 +3506,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
 
         if (fromPosition.getLedgerId() == toPosition.getLedgerId()) {
             // If the 2 positions are in the same ledger
+            // hn 同一个ledgerId中的entryId如何保证一定是单调递增 不出现空洞？
             long count = toPosition.getEntryId() - fromPosition.getEntryId() - 1;
             count += fromIncluded ? 1 : 0;
             count += toIncluded ? 1 : 0;
@@ -3527,6 +3528,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             // 3. Add the whole ledgers entries in between
             for (LedgerInfo ls : ledgers.subMap(fromPosition.getLedgerId(), false, toPosition.getLedgerId(), false)
                     .values()) {
+                // hn ledger中的元信息如何保证和实际存储是一致的
                 count += ls.getEntries();
             }
 

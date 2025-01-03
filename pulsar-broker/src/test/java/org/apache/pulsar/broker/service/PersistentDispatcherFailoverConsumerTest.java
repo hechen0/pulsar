@@ -237,6 +237,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         assertEquals(isActive, change.isIsActive());
     }
 
+    // hn 关闭后 consumer会被主动关闭
     @Test(timeOut = 10000)
     public void testAddConsumerWhenClosed() throws Exception {
         PersistentTopic topic = new PersistentTopic(successTopicName, ledgerMock, pulsarTestContext.getBrokerService());
@@ -251,6 +252,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         assertEquals(0, pdfc.consumers.size());
     }
 
+    // hn consumer在failover模式下会根据 consumer name 排序
     @Test
     public void testConsumerGroupChangesWithOldNewConsumers() throws Exception {
         PersistentTopic topic =
@@ -299,6 +301,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         PersistentSubscription sub = new PersistentSubscription(topic, "sub-1", cursorMock, false);
 
         int partitionIndex = 4;
+        // hn 这个地方是Failover 但consumer却是exclusive
         PersistentDispatcherSingleActiveConsumer pdfc = new PersistentDispatcherSingleActiveConsumer(cursorMock,
                 SubType.Failover, partitionIndex, topic, sub);
 

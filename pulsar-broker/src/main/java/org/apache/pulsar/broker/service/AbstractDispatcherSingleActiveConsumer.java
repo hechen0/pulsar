@@ -108,6 +108,7 @@ public abstract class AbstractDispatcherSingleActiveConsumer extends AbstractBas
         consumers.sort((c1, c2) -> {
             int priority = c1.getPriorityLevel() - c2.getPriorityLevel();
             if (priority != 0) {
+                // hn 有优先级按优先级排序 没有的话按consumerName自然序
                 hasPriorityConsumer.set(true);
                 return priority;
             }
@@ -126,6 +127,12 @@ public abstract class AbstractDispatcherSingleActiveConsumer extends AbstractBas
                 }
             }
         }
+        /* hn isActiveConsumerFailoverConsistentHashing 默认false
+            场景一: partitionNum=4 > consumerSize=2
+                分配结果: p0->0%2=c0 p1->1%2=c1 p2->2%2=c0 p3->3%2=c1
+            场景二：partitionNum=3 < consumerSize=5
+                分配结果: p0->0%5=c0 p2->1%5=c1 p3->2%5=c2
+        */
         int index = partitionIndex >= 0 && !serviceConfig.isActiveConsumerFailoverConsistentHashing()
                 ? partitionIndex % consumersSize
                 : peekConsumerIndexFromHashRing(makeHashRing(consumersSize));
@@ -168,7 +175,7 @@ public abstract class AbstractDispatcherSingleActiveConsumer extends AbstractBas
             return CompletableFuture.completedFuture(null);
         }
 
-        // hn 判断订阅类型 是否当前有活跃consumer 有的话直接拒绝新consumer
+        // hn 判断订阅类型为Exclusive 最多1个consumer
         if (subscriptionType == SubType.Exclusive && !consumers.isEmpty()) {
             Consumer actConsumer = getActiveConsumer();
             if (actConsumer != null) {
@@ -211,6 +218,7 @@ public abstract class AbstractDispatcherSingleActiveConsumer extends AbstractBas
 
         consumers.add(consumer);
 
+        // hn 没更换 active consumer 返回false
         if (!pickAndScheduleActiveConsumer()) {
             // the active consumer is not changed
             Consumer currentActiveConsumer = getActiveConsumer();

@@ -846,6 +846,7 @@ public class Consumer {
         }
         int oldPermits;
         if (!blockedConsumerOnUnackedMsgs) {
+            // hn 在这里增加服务端流控值
             oldPermits = MESSAGE_PERMITS_UPDATER.getAndAdd(this, additionalNumberOfMessages);
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "

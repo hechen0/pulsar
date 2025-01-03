@@ -3674,6 +3674,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             finalConnectionCheckInProgress.complete(Optional.of(true));
                         }
                     }, connectionLivenessCheckTimeoutMillis, TimeUnit.MILLISECONDS);
+                    // hn 服务端发送ping探活client
                     sendPing();
                     return finalConnectionCheckInProgress;
                 }

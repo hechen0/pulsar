@@ -1106,6 +1106,7 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
                     String partitionName = TopicName.get(topicName).getPartition(partitionIndex).toString();
                     CompletableFuture<Consumer<T>> subFuture = new CompletableFuture<>();
                     configurationData.setStartPaused(paused);
+                    // hn 最终每个partition都创建了一个ConsumerImpl实例
                     ConsumerImpl<T> newConsumer = createInternalConsumer(configurationData, partitionName,
                             partitionIndex, subFuture, createIfDoesNotExist, schema);
                     synchronized (pauseMutex) {
