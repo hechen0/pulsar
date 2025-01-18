@@ -1924,6 +1924,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             long skippedEntries = 0;
             if (newMarkDeletePosition.getLedgerId() == oldMarkDeletePosition.getLedgerId()
                     && newMarkDeletePosition.getEntryId() == oldMarkDeletePosition.getEntryId() + 1) {
+                // hn ？这里优化了啥
                 // Mark-deleting the position next to current one
                 skippedEntries = individualDeletedMessages.contains(newMarkDeletePosition.getLedgerId(),
                         newMarkDeletePosition.getEntryId()) ? 0 : 1;
@@ -2058,6 +2059,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             }
         }
 
+        // hn LAC位置滞后
         if (ledger.getLastConfirmedEntry().compareTo(newPosition) < 0) {
             boolean shouldCursorMoveForward = false;
             try {
@@ -3223,10 +3225,12 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         Map<Long, long[]> internalRanges = null;
         try {
+            // hn ？
             internalRanges = individualDeletedMessages.toRanges(getConfig().getMaxUnackedRangesToPersist());
         } catch (Exception e) {
             log.warn("[{}]-{} Failed to serialize individualDeletedMessages", ledger.getName(), name, e);
         }
+        // hn 累加ack、单条ack
         if (internalRanges != null && !internalRanges.isEmpty()) {
             piBuilder.addAllIndividualDeletedMessageRanges(buildLongPropertiesMap(internalRanges));
         } else {
@@ -3331,6 +3335,8 @@ public class ManagedCursorImpl implements ManagedCursor {
 
     boolean shouldCloseLedger(LedgerHandle lh) {
         long now = clock.millis();
+        // hn cursor的ledger翻转
+        //  翻转条件: zk可用 && (条数 > 5w || 时间 > 4h) && 状态正确
         if (ledger.getFactory().isMetadataServiceAvailable()
                 && (lh.getLastAddConfirmed() >= getConfig().getMetadataMaxEntriesPerLedger()
                 || lastLedgerSwitchTimestamp < (now - getConfig().getLedgerRolloverTimeout() * 1000))

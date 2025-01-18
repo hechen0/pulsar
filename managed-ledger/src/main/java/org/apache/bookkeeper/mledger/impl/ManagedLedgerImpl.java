@@ -427,6 +427,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                                 log.debug("[{}] Opened ledger {}: {}", name, id, BKException.getMessage(rc));
                             }
                             if (rc == BKException.Code.OK) {
+                                // hn ledger时间戳为打开时间
                                 LedgerInfo info = LedgerInfo.newBuilder().setLedgerId(id)
                                         .setEntries(lh.getLastAddConfirmed() + 1).setSize(lh.getLength())
                                         .setTimestamp(clock.millis()).build();
@@ -1762,6 +1763,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             log.debug("[{}] Ledger has been closed id={} entries={}", name, lh.getId(), entriesInLedger);
         }
         if (entriesInLedger > 0) {
+            // hn 为啥需要更新时间
             LedgerInfo info = LedgerInfo.newBuilder().setLedgerId(lh.getId()).setEntries(entriesInLedger)
                     .setSize(lh.getLength()).setTimestamp(clock.millis()).build();
             ledgers.put(lh.getId(), info);
@@ -2694,6 +2696,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             while (ledgerInfoIterator.hasNext()){
                 LedgerInfo ls = ledgerInfoIterator.next();
                 // currentLedger can not be deleted
+                // hn 当前正在使用打开的ledger不会被清理 即使是没有数据
                 if (ls.getLedgerId() == currentLedger.getId()) {
                     if (log.isDebugEnabled()) {
                         log.debug("[{}] Ledger {} skipped for deletion as it is currently being written to", name,
@@ -2703,6 +2706,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 }
                 // if truncate, all ledgers besides currentLedger are going to be deleted
                 if (isTruncate) {
+                    // hn 直接强制清理？
                     if (log.isDebugEnabled()) {
                         log.debug("[{}] Ledger {} will be truncated with ts {}",
                                 name, ls.getLedgerId(), ls.getTimestamp());
@@ -2712,8 +2716,10 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 }
 
                 totalSizeToDelete += ls.getSize();
+                // hn retentionPolicy size 大小判断 会多删除 确保size小于配置大小
                 boolean overRetentionQuota = isLedgerRetentionOverSizeQuota(retentionSizeInMB, totalSizeOfML,
                         totalSizeToDelete);
+                // hn retentionPolicy time 时间判断
                 boolean expired = hasLedgerRetentionExpired(retentionTimeMs, ls.getTimestamp());
                 if (log.isDebugEnabled()) {
                     log.debug(
@@ -2747,6 +2753,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 }
             }
 
+            // hn 清理 offload 数据
             for (LedgerInfo ls : ledgers.values()) {
                 if (isOffloadedNeedsDelete(ls.getOffloadContext(), optionalOffloadPolicies)
                         && !ledgersToDelete.contains(ls)) {
@@ -2778,6 +2785,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 return;
             }
 
+            // hn 删除内存中的ledgers
             doDeleteLedgers(ledgersToDelete);
 
             for (LedgerInfo ls : offloadedLedgersToDelete) {
@@ -2795,6 +2803,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 log.debug("[{}] Updating of ledgers list after trimming", name);
             }
 
+            // hn 将内存的中的变化更新到zk中
             store.asyncUpdateLedgerIds(name, getManagedLedgerInfo(), ledgersStat, new MetaStoreCallback<Void>() {
                 @Override
                 public void operationComplete(Void result, Stat stat) {
@@ -2805,6 +2814,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                     trimmerMutex.unlock();
 
                     for (LedgerInfo ls : ledgersToDelete) {
+                        // hn 删除
                         log.info("[{}] Removing ledger {} - size: {}", name, ls.getLedgerId(), ls.getSize());
                         asyncDeleteLedger(ls.getLedgerId(), ls);
                     }
@@ -3037,8 +3047,10 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     private void asyncDeleteLedger(long ledgerId, LedgerInfo info) {
+        // hn 和offload是啥关系
         if (!info.getOffloadContext().getBookkeeperDeleted()) {
             // only delete if it hasn't been previously deleted for offload
+            // hn 调用bk client删除 及时重试3次 但依旧无法确保删除成功 ml中会有脏数据
             asyncDeleteLedger(ledgerId, DEFAULT_LEDGER_DELETE_RETRIES);
         }
 
@@ -3055,6 +3067,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             log.warn("[{}] Failed to delete ledger after retries {}", name, ledgerId);
             return;
         }
+        // hn 调用bk client删除zk中的数据
         bookKeeper.asyncDeleteLedger(ledgerId, (rc, ctx) -> {
             if (isNoSuchLedgerExistsException(rc)) {
                 log.warn("[{}] Ledger was already deleted {}", name, ledgerId);
@@ -3505,6 +3518,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         Position toPosition = range.upperEndpoint();
         boolean toIncluded = range.upperBoundType() == BoundType.CLOSED;
 
+        // hn 如果是同一个ledger，只要看entry相差多少
         if (fromPosition.getLedgerId() == toPosition.getLedgerId()) {
             // If the 2 positions are in the same ledger
             // hn 同一个ledgerId中的entryId如何保证一定是单调递增 不出现空洞？
@@ -3513,6 +3527,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             count += toIncluded ? 1 : 0;
             return count;
         } else {
+            // hn 如果是不同的ledger 需要加上中间所有的ledger的entry数量
             long count = 0;
             // If the from & to are pointing to different ledgers, then we need to :
             // 1. Add the entries in the ledger pointed by toPosition
@@ -4354,6 +4369,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     public CompletableFuture<Void> asyncTruncate() {
 
         final List<CompletableFuture<Void>> futures = new ArrayList();
+        // hn 清理所有的backlog offset重置到最新
         for (ManagedCursor cursor : cursors) {
             final CompletableFuture<Void> future = new CompletableFuture<>();
             cursor.asyncClearBacklog(new AsyncCallbacks.ClearBacklogCallback() {
