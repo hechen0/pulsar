@@ -2803,7 +2803,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 log.debug("[{}] Updating of ledgers list after trimming", name);
             }
 
-            // hn 将内存的中的变化更新到zk中
+            // hn 将内存中的变化更新到zk中
             store.asyncUpdateLedgerIds(name, getManagedLedgerInfo(), ledgersStat, new MetaStoreCallback<Void>() {
                 @Override
                 public void operationComplete(Void result, Stat stat) {

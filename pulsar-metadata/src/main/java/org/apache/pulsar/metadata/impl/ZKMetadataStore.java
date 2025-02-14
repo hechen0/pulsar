@@ -188,6 +188,7 @@ public class ZKMetadataStore extends AbstractBatchedMetadataStore
 
     @Override
     protected void batchOperation(List<MetadataOp> ops) {
+        // hn zk批量操作
         try {
             zkc.multi(ops.stream().map(this::convertOp).collect(Collectors.toList()), (rc, path, ctx, results) -> {
                 if (results == null) {
