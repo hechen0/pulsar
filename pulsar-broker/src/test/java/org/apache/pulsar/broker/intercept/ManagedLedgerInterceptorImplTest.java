@@ -21,7 +21,7 @@ package org.apache.pulsar.broker.intercept;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.fail;
+import static org.testng.Assert.assertTrue;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -30,9 +30,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import lombok.Cleanup;
 import org.apache.bookkeeper.mledger.AsyncCallbacks;
@@ -59,8 +63,8 @@ import org.testng.Assert;
 import org.testng.annotations.Test;
 
 @Test(groups = "broker")
-public class MangedLedgerInterceptorImplTest  extends MockedBookKeeperTestCase {
-    private static final Logger log = LoggerFactory.getLogger(MangedLedgerInterceptorImplTest.class);
+public class ManagedLedgerInterceptorImplTest  extends MockedBookKeeperTestCase {
+    private static final Logger log = LoggerFactory.getLogger(ManagedLedgerInterceptorImplTest.class);
 
     public static class TestPayloadProcessor implements ManagedLedgerPayloadProcessor {
         @Override
@@ -446,26 +450,32 @@ public class MangedLedgerInterceptorImplTest  extends MockedBookKeeperTestCase {
                 return new Processor() {
                     @Override
                     public ByteBuf process(Object contextObj, ByteBuf inputPayload) {
-                        throw new RuntimeException(failureMsg);
+                        Commands.skipBrokerEntryMetadataIfExist(inputPayload);
+                        if (inputPayload.readBoolean()) {
+                            throw new RuntimeException(failureMsg);
+                        }
+                        return inputPayload;
                     }
 
                     @Override
                     public void release(ByteBuf processedPayload) {
                         // no-op
-                        fail("the release method can't be reached");
                     }
                 };
             }
         })));
 
         var ledger = factory.open("testManagedLedgerPayloadProcessorFailure", config);
-        var countDownLatch = new CountDownLatch(1);
+        int count = 10;
+        var countDownLatch = new CountDownLatch(count);
+        var successCount = new AtomicInteger(0);
         var expectedException = new ArrayList<Exception>();
-        ledger.asyncAddEntry("test".getBytes(), 1, 1, new AsyncCallbacks.AddEntryCallback() {
+
+        var addEntryCallback = new AsyncCallbacks.AddEntryCallback() {
             @Override
             public void addComplete(Position position, ByteBuf entryData, Object ctx) {
-                entryData.release();
                 countDownLatch.countDown();
+                successCount.incrementAndGet();
             }
 
             @Override
@@ -474,10 +484,72 @@ public class MangedLedgerInterceptorImplTest  extends MockedBookKeeperTestCase {
                 expectedException.add(exception);
                 countDownLatch.countDown();
             }
-        }, null);
+        };
+
+        for (int i = 0; i < count; i++) {
+            if (i % 2 == 0) {
+                ledger.asyncAddEntry(Unpooled.buffer().writeBoolean(true), addEntryCallback, null);
+            } else {
+                ledger.asyncAddEntry(Unpooled.buffer().writeBoolean(false), addEntryCallback, null);
+            }
+        }
+
         countDownLatch.await();
-        assertEquals(expectedException.size(), 1);
-        assertEquals(expectedException.get(0).getCause().getMessage(), failureMsg);
+        assertEquals(expectedException.size(), count / 2);
+        assertEquals(successCount.get(), count / 2);
+        for (Exception e : expectedException) {
+            assertEquals(e.getCause().getMessage(), failureMsg);
+        }
+        ledger.close();
     }
 
+    @Test
+    public void testBeforeAddEntry() throws Exception {
+        final var interceptor = new ManagedLedgerInterceptorImpl(getBrokerEntryMetadataInterceptors(), null);
+        final var config = new ManagedLedgerConfig();
+        final var numEntries = 100;
+        config.setMaxEntriesPerLedger(numEntries);
+        config.setManagedLedgerInterceptor(interceptor);
+        @Cleanup final var ml = (ManagedLedgerImpl) factory.open("test_concurrent_add_entry", config);
+
+        final var indexesBeforeAdd = new ArrayList<Long>();
+        final var batchSizes = new ArrayList<Long>();
+        final var random = new Random();
+        final var latch = new CountDownLatch(numEntries);
+        final var executor = Executors.newFixedThreadPool(3);
+        final var lock = new Object(); // make sure `asyncAddEntry` are called in order
+        for (int i = 0; i < numEntries; i++) {
+            final var batchSize = random.nextInt(0, 100);
+            final var msg = "msg-" + i;
+            final var callback = new AsyncCallbacks.AddEntryCallback() {
+
+                @Override
+                public void addComplete(Position position, ByteBuf entryData, Object ctx) {
+                    latch.countDown();
+                }
+
+                @Override
+                public void addFailed(ManagedLedgerException exception, Object ctx) {
+                    log.error("Failed to add {}", msg, exception);
+                    latch.countDown();
+                }
+            };
+            executor.execute(() -> {
+                synchronized (lock) {
+                    batchSizes.add((long) batchSize);
+                    indexesBeforeAdd.add(interceptor.getIndex() + 1); // index is updated in each asyncAddEntry call
+                    ml.asyncAddEntry(Unpooled.wrappedBuffer(msg.getBytes()), batchSize, callback, null);
+                }
+            });
+        }
+        assertTrue(latch.await(3, TimeUnit.SECONDS));
+        synchronized (lock) {
+            for (int i = 1; i < numEntries; i++) {
+                final var sum = batchSizes.get(i) + batchSizes.get(i - 1);
+                batchSizes.set(i, sum);
+            }
+            assertEquals(indexesBeforeAdd.subList(1, numEntries), batchSizes.subList(0, numEntries - 1));
+        }
+        executor.shutdown();
+    }
 }
