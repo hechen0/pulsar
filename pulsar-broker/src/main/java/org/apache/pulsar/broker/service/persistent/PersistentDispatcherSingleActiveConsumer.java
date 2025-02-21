@@ -350,7 +350,8 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
                 final Consumer activeConsumer = getActiveConsumer();
                 if (consumer != activeConsumer) {
                     log.info("[{}] cancel the readMoreEntries because consumer {} is no longer the active consumer {}",
-                            topic.getName(), consumer.consumerName(), activeConsumer.consumerName());
+                            topic.getName(), consumer.consumerName(),
+                            activeConsumer != null ? activeConsumer.consumerName() : null);
                     return;
                 }
                 if (havePendingRead) {
@@ -612,9 +613,9 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
         if (consumer == null || cursor.checkAndUpdateReadPositionChanged()) {
             return false;
         }
-        int totalAvailablePermits = consumer.getAvailablePermits();
+        boolean isConsumerAvailable = !consumer.isBlocked() && consumer.getAvailablePermits() > 0;
         // consider dispatch is stuck if : dispatcher has backlog, available-permits and there is no pending read
-        if (totalAvailablePermits > 0 && !havePendingRead && cursor.getNumberOfEntriesInBacklog(false) > 0) {
+        if (isConsumerAvailable && !havePendingRead && cursor.getNumberOfEntriesInBacklog(false) > 0) {
             log.warn("{}-{} Dispatcher is stuck and unblocking by issuing reads", topic.getName(), name);
             readMoreEntries(consumer);
             return true;
