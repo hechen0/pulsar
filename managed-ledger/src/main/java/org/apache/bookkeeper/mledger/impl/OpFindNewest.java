@@ -144,6 +144,7 @@ class OpFindNewest implements ReadEntryCallback {
     }
 
     public void find() {
+        // hn cursor和ledger啥区别？
         if (cursor != null ? cursor.hasMoreEntries(searchPosition) : ledger.hasMoreEntries(searchPosition)) {
             ledger.asyncReadEntry(searchPosition, this, null);
         } else {

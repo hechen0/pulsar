@@ -145,6 +145,7 @@ public class CoordinationServiceImpl implements CoordinationService {
     }
 
     private CompletableFuture<Long> incrementCounter(String path) {
+        // hn zk临时计数节点
         String counterBasePath = path + "/-";
         return store
                 .put(counterBasePath, new byte[0], Optional.of(-1L),

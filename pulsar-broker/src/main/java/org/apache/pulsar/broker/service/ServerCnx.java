@@ -1506,6 +1506,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         final long producerId = cmdProducer.getProducerId();
         final long requestId = cmdProducer.getRequestId();
         // Use producer name provided by client if present
+        // hn 如果客户端提供的producer冲突了咋办？
         final String producerName = cmdProducer.hasProducerName() ? cmdProducer.getProducerName()
                 : service.generateUniqueProducerName();
         final long epoch = cmdProducer.getEpoch();

@@ -527,6 +527,7 @@ public class Consumer {
 
             Position position;
             MessageIdData msgId = ack.getMessageIdAt(0);
+            // hn 这是啥意思？为啥 累计ACK 模式有这种逻辑
             if (msgId.getAckSetsCount() > 0) {
                 long[] ackSets = new long[msgId.getAckSetsCount()];
                 for (int j = 0; j < msgId.getAckSetsCount(); j++) {

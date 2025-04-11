@@ -312,6 +312,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     ManagedCursorImpl(BookKeeper bookkeeper, ManagedLedgerImpl ledger, String cursorName) {
         this.bookkeeper = bookkeeper;
         this.cursorProperties = Collections.emptyMap();
+        // hn 这个是topic
         this.ledger = ledger;
         this.name = cursorName;
         this.individualDeletedMessages = new RangeSetWrapper<>(positionRangeConverter,
@@ -1967,6 +1968,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         Position oldMarkDeletePosition = markDeletePosition;
 
         if (!newMarkDeletePosition.equals(oldMarkDeletePosition)) {
+            // hn 判断中间是否有空洞
             long skippedEntries = 0;
             if (newMarkDeletePosition.getLedgerId() == oldMarkDeletePosition.getLedgerId()
                     && newMarkDeletePosition.getEntryId() == oldMarkDeletePosition.getEntryId() + 1) {
@@ -2064,6 +2066,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             log.debug("[{}] Mark delete cursor {} up to position: {}", ledger.getName(), name, position);
         }
 
+        // hn ？处理batch提交
         Position newPosition = ackBatchPosition(position);
         if (ledger.getLastConfirmedEntry().compareTo(newPosition) < 0) {
             boolean shouldCursorMoveForward = false;
@@ -2110,6 +2113,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         internalAsyncMarkDelete(newPosition, properties, callback, ctx);
     }
 
+    // hn 和batch发送有关
     private Position ackBatchPosition(Position position) {
         return AckSetStateUtil.maybeGetAckSetState(position)
                 .map(AckSetState::getAckSet)
@@ -2122,6 +2126,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                     // than the recorded index.
                     final var givenBitSet = BitSet.valueOf(ackSet);
                     batchDeletedIndexes.compute(position, (k, v) -> {
+                        // hn 判断哪个ACK的位置更大 就更新哪个
                         if (v == null || givenBitSet.nextSetBit(0) > v.nextSetBit(0)) {
                             return givenBitSet;
                         } else {
@@ -2367,6 +2372,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
             for (Position pos : positions) {
                 Position position  = requireNonNull(pos);
+                // hn ack位置比LAC更新 返回错误
                 if (ledger.getLastConfirmedEntry().compareTo(position) < 0) {
                     if (log.isDebugEnabled()) {
                         log.debug(
@@ -2426,6 +2432,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                 }
             }
 
+            // hn 把独立的多个ACK位置前后组合起来 成为一个若干区间
             if (individualDeletedMessages.isEmpty()) {
                 // No changes to individually deleted messages, so nothing to do at this point
                 return;
@@ -2989,6 +2996,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             public void operationComplete() {
                 // We now have a new ledger where we can write
                 synchronized (pendingMarkDeleteOps) {
+                    // hn 这里统一flush到bk中
                     flushPendingMarkDeletes();
 
                     // Resume normal mark-delete operations

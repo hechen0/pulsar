@@ -1195,6 +1195,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         if (possibleSendToDeadLetterTopicMessages != null) {
             possibleSendToDeadLetterTopicMessages.clear();
         }
+        // hn 在关闭前会flush一次
         acknowledgmentsGroupingTracker.close();
         if (batchReceiveTimeout != null) {
             batchReceiveTimeout.cancel();

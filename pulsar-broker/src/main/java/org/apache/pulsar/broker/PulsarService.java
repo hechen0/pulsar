@@ -881,8 +881,10 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                     openTelemetry.getOpenTelemetryService().getOpenTelemetry());
             localMetadataStore.registerSessionListener(this::handleMetadataSessionEvent);
 
+            // hn ？
             coordinationService = new CoordinationServiceImpl(localMetadataStore);
 
+            // hn ？
             if (config.isConfigurationStoreSeparated()) {
                 configMetadataSynchronizer = StringUtils.isNotBlank(config.getConfigurationMetadataSyncEventTopic())
                         ? new PulsarMetadataEventSynchronizer(this, config.getConfigurationMetadataSyncEventTopic())
@@ -894,10 +896,12 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                 configurationMetadataStore = localMetadataStore;
                 shouldShutdownConfigurationMetadataStore = false;
             }
+            // hn ？
             pulsarResources = newPulsarResources();
 
             orderedExecutor = newOrderedExecutor();
 
+            // hn ？
             // Initialize the message protocol handlers
             protocolHandlers = ProtocolHandlers.load(config);
             protocolHandlers.initialize(config);

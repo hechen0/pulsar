@@ -3509,6 +3509,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     public CompletableFuture<Void> updateOldPositionInfo() {
         TopicName topicName = TopicName.get(getName());
 
+        // hn 模式匹配语法（Java 14 引入）https://v.flomoapp.com/mine/?memo_id=MTY4NDkzOTQy
         if (!(ledger.getCursors() instanceof ManagedCursorContainer managedCursorContainer)) {
             // TODO: support this method with a customized managed ledger implementation
             return CompletableFuture.completedFuture(null);

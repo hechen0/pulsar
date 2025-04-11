@@ -20,25 +20,25 @@ package org.apache.pulsar.client.impl;
 
 import com.google.common.collect.Sets;
 import io.netty.channel.ChannelHandlerContext;
+
 import java.lang.reflect.Field;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pulsar.PulsarVersion;
 import org.apache.pulsar.broker.BrokerTestUtil;
 import org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest;
 import org.apache.pulsar.broker.service.ServerCnx;
-import org.apache.pulsar.client.api.Consumer;
-import org.apache.pulsar.client.api.MessageId;
-import org.apache.pulsar.client.api.MessageIdAdv;
-import org.apache.pulsar.client.api.Producer;
-import org.apache.pulsar.client.api.PulsarClient;
-import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.broker.service.Topic;
+import org.apache.pulsar.client.api.*;
 import org.apache.pulsar.common.api.proto.ServerError;
 import org.apache.pulsar.common.policies.data.ClusterData;
+import org.apache.pulsar.common.policies.data.ManagedLedgerInternalStats;
 import org.apache.pulsar.common.policies.data.TenantInfoImpl;
 import org.apache.pulsar.common.protocol.Commands;
 import org.awaitility.Awaitility;
@@ -75,6 +75,47 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
     protected void cleanup() throws Exception {
         super.internalCleanup();
         this.executorService.shutdownNow();
+    }
+
+    @Test
+    public void testHechenClientCnx() throws Exception {
+        // create producer
+        final String topic = "persistent://" + NAMESPACE + "/testHechenClientCnx";
+        final String subName = "my-sub";
+
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+                .topic(topic)
+                .create();
+
+        for (int i = 0; i < 3; i++) {
+            producer.send("hello world " + i);
+        }
+        producer.close();
+
+        // consumer
+        Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
+                .subscriptionName(subName)
+                .topic(topic)
+                .subscriptionInitialPosition(SubscriptionInitialPosition.Earliest)
+                .subscribe();
+        for (int i = 0; i < 3; i++) {
+            Message<String> msg = consumer.receive();
+            assert msg.getValue().equals("hello world " + i);
+
+            // 跳过中间
+            if (i != 1) {
+                consumer.acknowledge(msg);
+            }
+        }
+        consumer.close();
+
+
+
+        // get cursor ack position
+        Topic topicRef = pulsar.getBrokerService().getTopic(topic, false).get().get();
+        Map<String, ManagedLedgerInternalStats.CursorStats> cursors = topicRef.getInternalStats(true).get().getCursors();
+
+        System.out.println("1");
     }
 
     @Test
@@ -173,9 +214,9 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
             Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() ->
                     (((ProducerImpl<?>) producerOne).getClientCnx() != null
                             && !cnxOne.equals(((ProducerImpl<?>) producerOne).getClientCnx()))
-                    ||  (((ProducerImpl<?>) producerThree).getClientCnx() != null
+                            || (((ProducerImpl<?>) producerThree).getClientCnx() != null
                             && !cnxThree.equals(((ProducerImpl<?>) producerThree).getClientCnx()))
-                    || !cnxTwo.equals(((ProducerImpl<?>) producerTwo).getClientCnx()));
+                            || !cnxTwo.equals(((ProducerImpl<?>) producerTwo).getClientCnx()));
             Assert.fail();
         } catch (Throwable e) {
             Assert.assertTrue(e instanceof ConditionTimeoutException);
@@ -234,7 +275,7 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
     }
 
     public void testSupportsGetPartitionedMetadataWithoutAutoCreation() throws Exception {
-        final String topic = BrokerTestUtil.newUniqueName( "persistent://" + NAMESPACE + "/tp");
+        final String topic = BrokerTestUtil.newUniqueName("persistent://" + NAMESPACE + "/tp");
         admin.topics().createNonPartitionedTopic(topic);
         PulsarClientImpl clientWitBinaryLookup = (PulsarClientImpl) PulsarClient.builder()
                 .maxNumberOfRejectedRequestPerConnection(1)

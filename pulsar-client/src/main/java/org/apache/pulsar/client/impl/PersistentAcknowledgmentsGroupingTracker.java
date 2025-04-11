@@ -265,6 +265,7 @@ public class PersistentAcknowledgmentsGroupingTracker implements Acknowledgments
             } finally {
                 readLock.ifPresent(Lock::unlock);
                 if (pendingIndividualAcks.size() >= maxAckGroupSize) {
+                    // hn 如果待提交数超过了1000 flush一次
                     flush();
                 }
             }
@@ -272,6 +273,7 @@ public class PersistentAcknowledgmentsGroupingTracker implements Acknowledgments
     }
 
 
+    // hn 只是加队列 等待异步提交
     private CompletableFuture<Void> doIndividualAckAsync(MessageIdAdv messageId) {
         pendingIndividualAcks.add(messageId);
         pendingIndividualBatchIndexAcks.remove(messageId);
@@ -498,6 +500,7 @@ public class PersistentAcknowledgmentsGroupingTracker implements Acknowledgments
 
         if (entriesToAck.size() > 0) {
 
+            // hn 在这里新建实例 MessageAckCommand
             newMessageAckCommandAndWrite(cnx, consumer.consumerId, 0L, 0L,
                     null, AckType.Individual, null, true,
                     (TimedCompletableFuture<Void>) currentIndividualAckFuture, entriesToAck);
@@ -510,6 +513,7 @@ public class PersistentAcknowledgmentsGroupingTracker implements Acknowledgments
                                 + " -- individual-batch-index-acks: {}",
                         consumer, lastCumulativeAck, pendingIndividualAcks, entriesToAck);
             }
+            // hn 发送
             cnx.ctx().flush();
         }
 

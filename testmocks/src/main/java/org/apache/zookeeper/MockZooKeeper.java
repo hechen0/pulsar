@@ -759,6 +759,7 @@ public class MockZooKeeper extends ZooKeeper {
             throw new KeeperException.NoNodeException(path);
         }
 
+        // hn 在内存中实现了单机版zk
         MockZNode mockZNode = tree.get(path);
         int currentVersion = mockZNode.getVersion();
 

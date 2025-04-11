@@ -569,6 +569,7 @@ public class BrokerService implements Closeable {
     }
 
     public void start() throws Exception {
+        // hn ？为啥需要生成producerName
         this.producerNameGenerator = new DistributedIdGenerator(pulsar.getCoordinationService(),
                 PRODUCER_NAME_GENERATOR_PATH, pulsar.getConfiguration().getClusterName());
 
