@@ -130,7 +130,8 @@ public class Commands {
     public static final short magicBrokerEntryMetadata = 0x0e02;
     private static final int checksumSize = 4;
 
-    private static final FastThreadLocal<BaseCommand> LOCAL_BASE_COMMAND = new FastThreadLocal<BaseCommand>() {
+    @VisibleForTesting
+    static final FastThreadLocal<BaseCommand> LOCAL_BASE_COMMAND = new FastThreadLocal<BaseCommand>() {
         @Override
         protected BaseCommand initialValue() throws Exception {
             return new BaseCommand();
@@ -240,21 +241,21 @@ public class Commands {
                                      String targetBroker, String originalPrincipal, AuthData originalAuthData,
                                      String originalAuthMethod) {
         return newConnect(authMethodName, authData, protocolVersion, libVersion, targetBroker, originalPrincipal,
-                originalAuthData, originalAuthMethod, null);
+                originalAuthData, originalAuthMethod, null, null);
     }
 
     public static ByteBuf newConnect(String authMethodName, AuthData authData, int protocolVersion, String libVersion,
                                      String targetBroker, String originalPrincipal, AuthData originalAuthData,
-                                     String originalAuthMethod, String proxyVersion) {
+                                     String originalAuthMethod, String proxyVersion, FeatureFlags featureFlags) {
         BaseCommand cmd = newConnectWithoutSerialize(authMethodName, authData, protocolVersion, libVersion,
-                targetBroker, originalPrincipal, originalAuthData, originalAuthMethod, proxyVersion);
+                targetBroker, originalPrincipal, originalAuthData, originalAuthMethod, proxyVersion, featureFlags);
         return serializeWithSize(cmd);
     }
 
     public static BaseCommand newConnectWithoutSerialize(String authMethodName, AuthData authData,
                                     int protocolVersion, String libVersion,
                                     String targetBroker, String originalPrincipal, AuthData originalAuthData,
-                                    String originalAuthMethod, String proxyVersion) {
+                                    String originalAuthMethod, String proxyVersion, FeatureFlags featureFlags) {
         BaseCommand cmd = localCmd(Type.CONNECT);
         CommandConnect connect = cmd.setConnect()
                 .setClientVersion(libVersion != null ? libVersion : "Pulsar Client")
@@ -285,7 +286,11 @@ public class Commands {
             connect.setOriginalAuthMethod(originalAuthMethod);
         }
         connect.setProtocolVersion(protocolVersion);
-        setFeatureFlags(connect.setFeatureFlags());
+        if (featureFlags != null) {
+            connect.setFeatureFlags().copyFrom(featureFlags);
+        } else {
+            setFeatureFlags(connect.setFeatureFlags());
+        }
 
         return cmd;
     }

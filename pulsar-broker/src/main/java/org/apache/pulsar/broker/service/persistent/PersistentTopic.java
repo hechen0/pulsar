@@ -130,7 +130,6 @@ import org.apache.pulsar.broker.service.SubscriptionOption;
 import org.apache.pulsar.broker.service.Topic;
 import org.apache.pulsar.broker.service.TopicPoliciesService;
 import org.apache.pulsar.broker.service.TransportCnx;
-import org.apache.pulsar.broker.service.persistent.DispatchRateLimiter.Type;
 import org.apache.pulsar.broker.service.schema.BookkeeperSchemaStorage;
 import org.apache.pulsar.broker.service.schema.exceptions.IncompatibleSchemaException;
 import org.apache.pulsar.broker.service.schema.exceptions.NotExistSchemaException;
@@ -243,8 +242,9 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     protected final MessageDeduplication messageDeduplication;
 
     private static final Long COMPACTION_NEVER_RUN = -0xfebecffeL;
-    private volatile CompletableFuture<Long> currentCompaction = CompletableFuture.completedFuture(
+    volatile CompletableFuture<Long> currentCompaction = CompletableFuture.completedFuture(
             COMPACTION_NEVER_RUN);
+    final AtomicBoolean disablingCompaction = new AtomicBoolean(false);
     private TopicCompactionService topicCompactionService;
 
     // TODO: Create compaction strategy from topic policy when exposing strategic compaction to users.
@@ -494,7 +494,8 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
             // dispatch rate limiter for topic
             if (!dispatchRateLimiter.isPresent()
                 && DispatchRateLimiter.isDispatchRateEnabled(topicPolicies.getDispatchRate().get())) {
-                this.dispatchRateLimiter = Optional.of(new DispatchRateLimiter(this, Type.TOPIC));
+                this.dispatchRateLimiter = Optional.of(
+                        getBrokerService().getDispatchRateLimiterFactory().createTopicDispatchRateLimiter(this));
             }
         }
     }
@@ -1340,18 +1341,42 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
             return;
         }
 
-        currentCompaction.handle((__, e) -> {
-            if (e != null) {
+        // Avoid concurrently execute compaction and unsubscribing.
+        synchronized (this) {
+            if (!disablingCompaction.compareAndSet(false, true)) {
+                unsubscribeFuture.completeExceptionally(
+                        new SubscriptionBusyException("the subscription is deleting by another task"));
+                return;
+            }
+        }
+        // Unsubscribe compaction cursor and delete compacted ledger.
+        currentCompaction.thenCompose(__ -> {
+            asyncDeleteCursor(subscriptionName, unsubscribeFuture);
+            return unsubscribeFuture;
+        }).thenAccept(__ -> {
+            try {
+                ((PulsarCompactorSubscription) subscription).cleanCompactedLedger();
+            } catch (Exception ex) {
+                Long compactedLedger = null;
+                Optional<CompactedTopicContext> compactedTopicContext = getCompactedTopicContext();
+                if (compactedTopicContext.isPresent() && compactedTopicContext.get().getLedger() != null) {
+                    compactedLedger = compactedTopicContext.get().getLedger().getId();
+                }
+                log.error("[{}][{}][{}] Error cleaning compacted ledger", topic, subscriptionName, compactedLedger, ex);
+            } finally {
+                // Reset the variable: disablingCompaction,
+                disablingCompaction.compareAndSet(true, false);
+            }
+        }).exceptionally(ex -> {
+            if (currentCompaction.isCompletedExceptionally()) {
                 log.warn("[{}][{}] Last compaction task failed", topic, subscriptionName);
-            }
-            return ((PulsarCompactorSubscription) subscription).cleanCompactedLedger();
-        }).whenComplete((__, ex) -> {
-            if (ex != null) {
-                log.error("[{}][{}] Error cleaning compacted ledger", topic, subscriptionName, ex);
-                unsubscribeFuture.completeExceptionally(ex);
             } else {
-                asyncDeleteCursor(subscriptionName, unsubscribeFuture);
+                log.warn("[{}][{}] Failed to delete cursor task failed", topic, subscriptionName);
             }
+            // Reset the variable: disablingCompaction,
+            disablingCompaction.compareAndSet(true, false);
+            unsubscribeFuture.completeExceptionally(ex);
+            return null;
         });
     }
 
@@ -1373,7 +1398,9 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                     log.debug("[{}][{}] Error deleting cursor for subscription",
                             topic, subscriptionName, exception);
                 }
-                if (exception instanceof ManagedLedgerException.ManagedLedgerNotFoundException) {
+                if (exception instanceof ManagedLedgerException.ManagedLedgerNotFoundException
+                        || exception instanceof ManagedLedgerException.CursorNotFoundException) {
+                    removeSubscription(subscriptionName);
                     unsubscribeFuture.complete(null);
                     lastActive = System.nanoTime();
                     return;
@@ -2009,6 +2036,10 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                    sub.expireMessages(messageTtlInSeconds);
                 }
             });
+            replicators.forEach((__, replicator)
+                    -> ((PersistentReplicator) replicator).expireMessages(messageTtlInSeconds));
+            shadowReplicators.forEach((__, replicator)
+                    -> ((PersistentReplicator) replicator).expireMessages(messageTtlInSeconds));
         }
     }
 
@@ -2259,11 +2290,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
     @Override
     public int getNumberOfConsumers() {
-        int count = 0;
-        for (PersistentSubscription subscription : subscriptions.values()) {
-            count += subscription.getConsumers().size();
-        }
-        return count;
+        return getNumberOfConsumers(subscriptions.values());
     }
 
     @Override
@@ -2457,7 +2484,6 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                 // Populate subscription specific stats here
                 topicStatsStream.writePair("msgBacklog",
                         subscription.getNumberOfEntriesInBacklog(true));
-                subscription.getExpiryMonitor().updateRates();
                 topicStatsStream.writePair("msgRateExpired", subscription.getExpiredMessageRate());
                 topicStatsStream.writePair("msgRateOut", subMsgRateOut);
                 topicStatsStream.writePair("messageAckRate", subMsgAckRate);
@@ -3246,8 +3272,14 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                                                             String.format("Another partition exists for [%s].",
                                                                     topicName));
                                                 } else {
-                                                    return partitionedTopicResources
-                                                            .deletePartitionedTopicAsync(topicName);
+                                                    try {
+                                                        return brokerService.getPulsar().getAdminClient().topics()
+                                                                .deletePartitionedTopicAsync(topicName.toString());
+                                                    } catch (PulsarServerException e) {
+                                                        log.info("[{}] Delete topic metadata failed due to failed to"
+                                                                + " get internal admin client.", topicName, e);
+                                                        return CompletableFuture.failedFuture(e);
+                                                    }
                                                 }
                                             });
                                 }))
@@ -3933,6 +3965,10 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
             try {
                 if (isClosingOrDeleting) {
                     log.info("[{}] Topic is closing or deleting, skip triggering compaction", topic);
+                    return;
+                }
+                if (disablingCompaction.get()) {
+                    log.info("[{}] Compaction is disabling, skip triggering compaction", topic);
                     return;
                 }
 
