@@ -223,6 +223,7 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
 
     public abstract int minReceiverQueueSize();
 
+    // hn ？
     protected void expectMoreIncomingMessages() {
         if (!conf.isAutoScaledReceiverQueueSizeEnabled()) {
             return;

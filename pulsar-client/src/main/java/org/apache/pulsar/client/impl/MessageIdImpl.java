@@ -81,9 +81,11 @@ public class MessageIdImpl implements MessageIdAdv {
         1. 避免线程竞争
             通过将MessageIdData对象与线程绑定，每个线程独立持有自己的实例，消除多线程并发访问共享变量时的锁竞争和同步开销
         2. 减少内存分配与GC压力
-            initialValue()方法会在首次调用LOCAL_MESSAGE_ID.get()时为线程初始化一个MessageIdData对象，后续直接从线程本地存储中复用该对象，避免了重复创建实例的开销，从而降低垃圾回收（GC）频率
+            initialValue()方法会在首次调用LOCAL_MESSAGE_ID.get()时为线程初始化一个MessageIdData对象，后续直接从线程本地存储中复用
+            该对象，避免了重复创建实例的开销，从而降低垃圾回收（GC）频率
         3. 提升访问速度
-            相比Java原生的ThreadLocal，FastThreadLocal通过数组索引直接访问数据，避免了哈希表查找和哈希冲突处理（如线性探测），时间复杂度从接近O(n)优化为O(1)，性能提升显著
+            相比Java原生的ThreadLocal，FastThreadLocal通过数组索引直接访问数据，避免了哈希表查找和哈希冲突处理（如线性探测），时间复杂
+            度从接近O(n)优化为O(1)，性能提升显著
         需要配合 FastThreadLocalThread使用 否则会退还到ThreadLocal
     */
     private static final FastThreadLocal<MessageIdData> LOCAL_MESSAGE_ID = new FastThreadLocal<MessageIdData>() {

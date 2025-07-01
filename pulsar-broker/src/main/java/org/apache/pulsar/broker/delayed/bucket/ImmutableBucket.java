@@ -103,14 +103,17 @@ class ImmutableBucket extends Bucket {
                         return nextSnapshotEntryIndex + 1;
                     });
         } else {
+            // hn entryId+1就是下一个快照
             loadMetaDataFuture = CompletableFuture.completedFuture(currentSegmentEntryId + 1);
         }
 
         return loadMetaDataFuture.thenCompose(nextSegmentEntryId -> {
+            // hn 读完了
             if (nextSegmentEntryId > lastSegmentEntryId) {
                 return CompletableFuture.completedFuture(null);
             }
 
+            // hn 重试3次
             return executeWithRetry(
                     () -> bucketSnapshotStorage.getBucketSnapshotSegment(bucketId, nextSegmentEntryId,
                             nextSegmentEntryId).whenComplete((___, ex) -> {
@@ -121,12 +124,14 @@ class ImmutableBucket extends Bucket {
                         }
                     }), BucketSnapshotPersistenceException.class, MaxRetryTimes)
                     .thenApply(bucketSnapshotSegments -> {
+                        // hn 读完了？
                         if (CollectionUtils.isEmpty(bucketSnapshotSegments)) {
                             return Collections.emptyList();
                         }
 
                         SnapshotSegment snapshotSegment =
                                 bucketSnapshotSegments.get(0);
+                        // hn 这个list有序？
                         List<DelayedIndex> indexList = snapshotSegment.getIndexesList();
                         this.setCurrentSegmentEntryId(nextSegmentEntryId);
                         if (isRecover) {

@@ -587,6 +587,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
 
     @Override
     public synchronized NavigableSet<Position> getScheduledMessages(int maxMessages) {
+        // hn ？
         if (!checkPendingLoadDone()) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Skip getScheduledMessages to wait for bucket snapshot load finish.",
@@ -595,14 +596,17 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
             return Collections.emptyNavigableSet();
         }
 
+        // hn 延迟到期的当前时间，有优化
         long cutoffTime = getCutoffTime();
 
+        // hn 把刚写入的挪到已到期队列中 如果到期的很多 这里的循环会执行很久吧？
         lastMutableBucket.moveScheduledMessageToSharedQueue(cutoffTime, sharedBucketPriorityQueue);
 
         NavigableSet<Position> positions = new TreeSet<>();
         int n = maxMessages;
 
         while (n > 0 && !sharedBucketPriorityQueue.isEmpty()) {
+            // hn 判断消息是否到期
             long timestamp = sharedBucketPriorityQueue.peekN1();
             if (timestamp > cutoffTime) {
                 break;
@@ -614,6 +618,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
             ImmutableBucket bucket = snapshotSegmentLastIndexTable.get(ledgerId, entryId);
             if (bucket != null && immutableBuckets.asMapOfRanges().containsValue(bucket)) {
                 // All message of current snapshot segment are scheduled, try load next snapshot segment
+                // hn 如果合并时处理会咋样
                 if (bucket.merging) {
                     log.info("[{}] Skip load to wait for bucket snapshot merge finish, bucketKey:{}",
                             dispatcher.getName(), bucket.bucketKey());
@@ -638,16 +643,20 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
                         .thenAccept(indexList -> {
                     synchronized (BucketDelayedDeliveryTracker.this) {
                         this.snapshotSegmentLastIndexTable.remove(ledgerId, entryId);
+                        // hn bucket读完删除
                         if (CollectionUtils.isEmpty(indexList)) {
                             immutableBuckets.asMapOfRanges()
                                     .remove(Range.closed(bucket.startLedgerId, bucket.endLedgerId));
                             bucket.asyncDeleteBucketSnapshot(stats);
                             return;
                         }
+                        // hn 这里说明indexList是有序的？
                         DelayedIndex
                                 lastDelayedIndex = indexList.get(indexList.size() - 1);
+                        // hn 加这个是为了？
                         this.snapshotSegmentLastIndexTable.put(lastDelayedIndex.getLedgerId(),
                                 lastDelayedIndex.getEntryId(), bucket);
+                        // hn 一次性加载去排序
                         for (DelayedIndex index : indexList) {
                             sharedBucketPriorityQueue.add(index.getTimestamp(), index.getLedgerId(),
                                     index.getEntryId());

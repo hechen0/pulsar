@@ -117,6 +117,7 @@ public class UnAckedMessageRedeliveryTracker extends UnAckedMessageTracker {
                 }
             }
         } finally {
+            // hn 客户端触发重投递 超时重投递
             if (messageIds.size() > 0) {
                 consumerBase.onAckTimeoutSend(messageIds);
                 consumerBase.redeliverUnacknowledgedMessages(messageIds);

@@ -158,20 +158,25 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
 
     @Override
     public CompletableFuture<Consumer<T>> subscribeAsync() {
+        // hn 没传topic也没传正则
         if (conf.getTopicNames().isEmpty() && conf.getTopicsPattern() == null) {
             return FutureUtil
                     .failedFuture(new InvalidConfigurationException("Topic name must be set on the consumer builder"));
         }
 
+        // hn 订阅名称
         if (StringUtils.isBlank(conf.getSubscriptionName())) {
             return FutureUtil.failedFuture(
                     new InvalidConfigurationException("Subscription name must be set on the consumer builder"));
         }
 
+        // hn keyshare模式
         if (conf.getKeySharedPolicy() != null && conf.getSubscriptionType() != SubscriptionType.Key_Shared) {
             return FutureUtil.failedFuture(
                     new InvalidConfigurationException("KeySharedPolicy must set with KeyShared subscription"));
         }
+
+        // hn 批量收消息策略
         if (conf.getBatchReceivePolicy() != null) {
             conf.setReceiverQueueSize(
                     Math.max(conf.getBatchReceivePolicy().getMaxNumMessages(), conf.getReceiverQueueSize()));

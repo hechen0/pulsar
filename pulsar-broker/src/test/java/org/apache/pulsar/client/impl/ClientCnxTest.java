@@ -88,7 +88,7 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
                 .create();
 
         for (int i = 0; i < 3; i++) {
-            producer.send("hello world " + i);
+            producer.newMessage().deliverAfter(7L, TimeUnit.SECONDS).value("delayed hello world " + i).send();
         }
         producer.close();
 
@@ -96,11 +96,13 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
         Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
                 .subscriptionName(subName)
                 .topic(topic)
+//                .subscriptionType(SubscriptionType.Exclusive)
+                .subscriptionType(SubscriptionType.Shared)
                 .subscriptionInitialPosition(SubscriptionInitialPosition.Earliest)
                 .subscribe();
         for (int i = 0; i < 3; i++) {
             Message<String> msg = consumer.receive();
-            assert msg.getValue().equals("hello world " + i);
+            assert msg.getValue().equals("delayed hello world " + i);
 
             // 跳过中间
             if (i != 1) {
@@ -108,7 +110,6 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
             }
         }
         consumer.close();
-
 
 
         // get cursor ack position

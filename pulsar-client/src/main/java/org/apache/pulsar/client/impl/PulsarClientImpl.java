@@ -561,6 +561,7 @@ public class PulsarClientImpl implements PulsarClient {
                     "Active consumer listener is only supported for failover subscription"));
         }
 
+        // hn 根据配置返回不同实现
         if (conf.getTopicsPattern() != null) {
             // If use topicsPattern, we should not use topic(), and topics() method.
             if (!conf.getTopicNames().isEmpty()){
@@ -595,6 +596,7 @@ public class PulsarClientImpl implements PulsarClient {
             }
 
             ConsumerBase<T> consumer;
+            // hn 多分区也是用 MultiTopicsConsumerImpl
             if (metadata.partitions > 0) {
                 consumer = MultiTopicsConsumerImpl.createPartitionedConsumer(PulsarClientImpl.this, conf,
                         externalExecutorProvider, consumerSubscribedFuture, metadata.partitions, schema, interceptors);
@@ -666,6 +668,7 @@ public class PulsarClientImpl implements PulsarClient {
 
                 // Pattern consumer has his unique check mechanism, so do not need the feature "autoUpdatePartitions".
                 conf.setAutoUpdatePartitions(false);
+                // hn 这个地方如何确保topic更新能及时感知的？
                 ConsumerBase<T> consumer = new PatternMultiTopicsConsumerImpl<>(pattern,
                         getTopicsResult.getTopicsHash(),
                         PulsarClientImpl.this,

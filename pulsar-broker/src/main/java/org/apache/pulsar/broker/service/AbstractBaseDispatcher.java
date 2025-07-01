@@ -226,6 +226,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                     continue;
                 }
             } else if (trackDelayedDelivery(entry.getLedgerId(), entry.getEntryId(), msgMetadata)) {
+                // hn 正常读时再处理延迟消息 如果是延迟 就不返回
                 // The message is marked for delayed delivery. Ignore for now.
                 entries.set(i, null);
                 entry.release();
