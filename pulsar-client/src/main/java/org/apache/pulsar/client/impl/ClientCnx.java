@@ -119,7 +119,6 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("unchecked")
 public class ClientCnx extends PulsarHandler {
 
-    private static final Logger log = LoggerFactory.getLogger(ClientCnx.class);
     protected final Authentication authentication;
     protected State state;
 
@@ -1354,7 +1353,7 @@ public class ClientCnx extends PulsarHandler {
         case PersistenceError:
             return new PulsarClientException.BrokerPersistenceException(errorMsg);
         case ServiceNotReady:
-            return new PulsarClientException.LookupException(errorMsg);
+            return new PulsarClientException.ServiceNotReadyException(errorMsg);
         case TooManyRequests:
             return new PulsarClientException.TooManyRequestsException(errorMsg);
         case ProducerBlockedQuotaExceededError:
@@ -1381,6 +1380,47 @@ public class ClientCnx extends PulsarHandler {
         default:
             return new PulsarClientException(errorMsg);
         }
+    }
+
+    public static ServerError revertClientExToErrorCode(PulsarClientException ex) {
+        if (ex instanceof PulsarClientException.AuthenticationException) {
+            return ServerError.AuthenticationError;
+        } else if (ex instanceof PulsarClientException.AuthorizationException) {
+            return ServerError.AuthorizationError;
+        } else if (ex instanceof PulsarClientException.ProducerBusyException) {
+            return ServerError.ProducerBusy;
+        } else if (ex instanceof PulsarClientException.ConsumerBusyException) {
+            return ServerError.ConsumerBusy;
+        } else if (ex instanceof PulsarClientException.BrokerMetadataException) {
+            return ServerError.MetadataError;
+        } else if (ex instanceof PulsarClientException.BrokerPersistenceException) {
+            return ServerError.PersistenceError;
+        } else if (ex instanceof PulsarClientException.TooManyRequestsException) {
+            return ServerError.TooManyRequests;
+        } else if (ex instanceof PulsarClientException.LookupException) {
+            return ServerError.ServiceNotReady;
+        } else if (ex instanceof PulsarClientException.ProducerBlockedQuotaExceededError) {
+            return ServerError.ProducerBlockedQuotaExceededError;
+        } else if (ex instanceof PulsarClientException.ProducerBlockedQuotaExceededException) {
+            return ServerError.ProducerBlockedQuotaExceededException;
+        } else if (ex instanceof PulsarClientException.TopicTerminatedException) {
+            return ServerError.TopicTerminatedError;
+        } else if (ex instanceof PulsarClientException.IncompatibleSchemaException) {
+            return ServerError.IncompatibleSchema;
+        } else if (ex instanceof PulsarClientException.TopicDoesNotExistException) {
+            return ServerError.TopicNotFound;
+        } else if (ex instanceof PulsarClientException.SubscriptionNotFoundException) {
+            return ServerError.SubscriptionNotFound;
+        } else if (ex instanceof PulsarClientException.ConsumerAssignException) {
+            return ServerError.ConsumerAssignError;
+        } else if (ex instanceof PulsarClientException.NotAllowedException) {
+            return ServerError.NotAllowedError;
+        } else if (ex instanceof PulsarClientException.TransactionConflictException) {
+            return ServerError.TransactionConflict;
+        } else if (ex instanceof PulsarClientException.ProducerFencedException) {
+            return ServerError.ProducerFenced;
+        }
+        return ServerError.UnknownError;
     }
 
     public void close() {
@@ -1439,13 +1479,7 @@ public class ClientCnx extends PulsarHandler {
         }
     }
 
-    public boolean isProxy() {
-        return proxyToTargetBrokerAddress != null;
-    }
-
-    public SocketAddress getLocalAddress() {
-        return this.localAddress;
-    }
+    private static final Logger log = LoggerFactory.getLogger(ClientCnx.class);
 
     /**
      * Check client connection is now free. This method will not change the state to idle.

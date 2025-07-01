@@ -227,8 +227,7 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         pulsar.getConfiguration().setForceDeleteNamespaceAllowed(true);
         for (String tenant : admin.tenants().getTenants()) {
             for (String namespace : admin.namespaces().getNamespaces(tenant)) {
-                deleteNamespaceWithRetry(namespace, true, admin, pulsar,
-                        mockPulsarSetup.getPulsar());
+                deleteNamespaceWithRetry(namespace, true, admin);
             }
             try {
                 admin.tenants().deleteTenant(tenant, true);
@@ -1445,7 +1444,7 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
     }
 
     @Test(timeOut = 30000)
-    public void testConsumerStatsLastTimestamp() throws PulsarClientException, PulsarAdminException, InterruptedException {
+    public void testConsumerStatsTimestamps() throws PulsarClientException, PulsarAdminException, InterruptedException {
         long timestamp = System.currentTimeMillis();
         final String topicName = "consumer-stats-" + timestamp;
         final String subscribeName = topicName + "-test-stats-sub";
@@ -1506,6 +1505,9 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         consumerStats = subscriptionStats.getConsumers().get(0);
         long consumedTimestamp = consumerStats.getLastConsumedTimestamp();
         long ackedTimestamp = consumerStats.getLastAckedTimestamp();
+        final long firstMessagesSentTimestamp = consumerStats.getFirstMessagesSentTimestamp();
+        final long firstConsumedFlowTimestamp = consumerStats.getFirstConsumedFlowTimestamp();
+
 
         // The lastConsumedTimestamp should same as the last time because the broker does not push any messages and the
         // consumer does not pull any messages.
@@ -1513,6 +1515,8 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         assertTrue(startAckedTimestampInConsumerStats < ackedTimestamp);
         assertNotEquals(0, consumedFlowTimestamp);
         assertTrue(startAckedTimestampInSubStats < ackedTimestampInSubStats);
+        assertNotEquals(0, firstConsumedFlowTimestamp);
+        assertNotEquals(0, firstMessagesSentTimestamp);
 
         // d. Send another messages. The lastConsumedTimestamp should be updated.
         producer.send("message-2".getBytes(StandardCharsets.UTF_8));
@@ -1538,6 +1542,8 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         consumerStats = subscriptionStats.getConsumers().get(0);
         long lastConsumedTimestamp = consumerStats.getLastConsumedTimestamp();
         long lastAckedTimestamp = consumerStats.getLastAckedTimestamp();
+        final long firstMessageSentTimestamp2 = consumerStats.getFirstMessagesSentTimestamp();
+        final long firstConsumedFlowTimestamp2 = consumerStats.getFirstConsumedFlowTimestamp();
 
         assertTrue(consumedTimestamp < lastConsumedTimestamp);
         assertTrue(ackedTimestamp < lastAckedTimestamp);
@@ -1545,6 +1551,8 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         assertEquals(lastConsumedFlowTimestamp, consumedFlowTimestamp);
         assertTrue(ackedTimestampInSubStats < lastAckedTimestampInSubStats);
         assertEquals(lastConsumedTimestamp, lastConsumedTimestampInSubStats);
+        assertEquals(firstConsumedFlowTimestamp, firstConsumedFlowTimestamp2);
+        assertEquals(firstMessagesSentTimestamp, firstMessageSentTimestamp2);
 
         consumer.close();
         producer.close();
@@ -1866,6 +1874,29 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
             assertEquals(topicStats.getSubscriptions().get(subName).getMsgBacklogNoDelayed(), 0);
         });
 
+    }
+
+
+    @Test
+    public void testPartitionedTopicStatsIncludeConsumerName() throws PulsarClientException, PulsarAdminException {
+        final String topic = "persistent://" + defaultNamespace + "/" + UUID.randomUUID();
+        admin.topics().createPartitionedTopic(topic, 2);
+        final String subName = "sub-name";
+        final String consumerName = "consumer-name";
+
+        @Cleanup
+        final PulsarClient client = PulsarClient.builder().serviceUrl(pulsar.getWebServiceAddress()).build();
+
+        @Cleanup
+        final Consumer<byte[]> consumer = client.newConsumer()
+                .topic(topic)
+                .subscriptionName(subName)
+                .consumerName(consumerName)
+                .subscribe();
+
+        final TopicStats topicStats = admin.topics().getPartitionedStats(topic, false);
+
+        assertEquals(topicStats.getSubscriptions().get(subName).getConsumers().get(0).getConsumerName(), consumerName);
     }
 
     @Test
@@ -3409,6 +3440,7 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         admin.namespaces().setRetention(ns, new RetentionPolicies(1800, 10000));
         // set backlog quota.
         admin.namespaces().setBacklogQuota(ns, BacklogQuota.builder()
+                .retentionPolicy(BacklogQuota.RetentionPolicy.producer_request_hold)
                 .limitSize(backlogQuotaLimitSize).limitTime(backlogQuotaLimitTime).build());
         // Verify result.
         Map<BacklogQuota.BacklogQuotaType, BacklogQuota> map = admin.namespaces().getBacklogQuotaMap(ns);
@@ -3417,6 +3449,7 @@ public class AdminApi2Test extends MockedPulsarServiceBaseTest {
         BacklogQuota backlogQuota = map.get(BacklogQuota.BacklogQuotaType.destination_storage);
         assertEquals(backlogQuota.getLimitSize(), backlogQuotaLimitSize);
         assertEquals(backlogQuota.getLimitTime(), backlogQuotaLimitTime);
+        assertEquals(backlogQuota.getPolicy(), BacklogQuota.RetentionPolicy.producer_request_hold);
         // cleanup.
         admin.namespaces().deleteNamespace(ns);
     }
