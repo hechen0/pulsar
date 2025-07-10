@@ -174,6 +174,12 @@ public class OneWayReplicatorUsingGlobalPartitionedTest extends OneWayReplicator
         super.testReplicationCountMetrics();
     }
 
+    @Test(enabled = false)
+    @Override
+    public void testNonPersistentReplicatorQueueSize() throws Exception {
+        super.testNonPersistentReplicatorQueueSize();
+    }
+
     @Test(timeOut = 60_000)
     public void testRemoveCluster() throws Exception {
         // Initialize.
@@ -273,5 +279,17 @@ public class OneWayReplicatorUsingGlobalPartitionedTest extends OneWayReplicator
     @Test
     public void testTopicPoliciesReplicationRule() throws Exception {
         super.testTopicPoliciesReplicationRule();
+    }
+
+    @Override
+    @Test
+    public void testReplicatorsInflightTaskListIsEmptyAfterReplicationFinished() throws Exception {
+        super.testReplicatorsInflightTaskListIsEmptyAfterReplicationFinished();
+    }
+
+    @Override
+    @Test(enabled = false)
+    public void testConcurrencyReplicationReadEntries() throws Exception {
+        super.testConcurrencyReplicationReadEntries();
     }
 }
