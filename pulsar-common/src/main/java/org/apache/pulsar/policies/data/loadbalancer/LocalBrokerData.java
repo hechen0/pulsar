@@ -257,6 +257,7 @@ public class LocalBrokerData implements LoadManagerReport {
     public double getMaxResourceUsageWithWeight(final double cpuWeight,
                                                 final double directMemoryWeight, final double bandwidthInWeight,
                                                 final double bandwidthOutWeight) {
+        // hn 以使用率最大值的资源作为计算依据
         return max(cpu.percentUsage() * cpuWeight,
                 directMemory.percentUsage() * directMemoryWeight, bandwidthIn.percentUsage() * bandwidthInWeight,
                 bandwidthOut.percentUsage() * bandwidthOutWeight) / 100;

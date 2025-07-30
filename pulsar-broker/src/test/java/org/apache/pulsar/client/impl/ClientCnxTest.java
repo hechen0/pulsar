@@ -96,7 +96,10 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
         Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
                 .subscriptionName(subName)
                 .topic(topic)
-//                .subscriptionType(SubscriptionType.Exclusive)
+                .messageListener((MessageListener<String>) (consumer1, msg) -> {
+                    log.info(consumer1 + ": " + msg);
+                    assert msg.getValue().startsWith("delayed hello world");
+                })
                 .subscriptionType(SubscriptionType.Shared)
                 .subscriptionInitialPosition(SubscriptionInitialPosition.Earliest)
                 .subscribe();

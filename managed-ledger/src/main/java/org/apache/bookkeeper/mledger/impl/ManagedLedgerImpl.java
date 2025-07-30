@@ -813,6 +813,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         buffer.retain();
 
         // Jump to specific thread to avoid contention from writers writing from different threads
+        // hn 切换线程 从IO 切到 bk client 避免阻塞io线程
         executor.execute(() -> {
             OpAddEntry addOperation = OpAddEntry.createNoRetainBuffer(this, buffer, numberOfMessages, callback, ctx,
                     currentLedgerTimeoutTriggered);
@@ -2006,6 +2007,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             // Current writing ledger is not in the cache (since we don't want
             // it to be automatically evicted), and we cannot use 2 different
             // ledger handles (read & write)for the same ledger.
+            // hn ？
             internalReadFromLedger(currentLedger, opReadEntry);
         } else {
             LedgerInfo ledgerInfo = ledgers.get(ledgerId);
@@ -2177,6 +2179,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
 
     private void internalReadFromLedger(ReadHandle ledger, OpReadEntry opReadEntry) {
 
+        // hn ？
         if (opReadEntry.readPosition.compareTo(opReadEntry.maxPosition) > 0) {
             opReadEntry.checkReadCompletion();
             return;

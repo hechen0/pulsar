@@ -1668,6 +1668,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         // Choose the close type.
         CloseTypes closeType;
         if (!disconnectClients) {
+            // hn ？
             closeType = CloseTypes.transferring;
         } else if (closeWithoutWaitingClientDisconnect) {
             closeType = CloseTypes.notWaitDisconnectClients;

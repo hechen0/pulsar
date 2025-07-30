@@ -168,6 +168,7 @@ public class PulsarMockLedgerHandle extends LedgerHandle {
 
     @Override
     public void asyncAddEntry(final ByteBuf data, final AddCallback cb, final Object ctx) {
+        // hn 走mock逻辑 不真实写bk
         bk.getAddEntryFailure().thenComposeAsync((res) -> {
                 Long delayMillis = bk.addEntryDelaysMillis.poll();
                 if (delayMillis == null) {

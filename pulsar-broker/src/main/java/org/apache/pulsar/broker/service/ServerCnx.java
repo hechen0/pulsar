@@ -1900,6 +1900,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             return;
         }
 
+        // hn getNow不阻塞当前线程 如果没ready 会返回null
         Producer producer = producerFuture.getNow(null);
         if (log.isDebugEnabled()) {
             printSendCommandDebug(send, headersAndPayload);

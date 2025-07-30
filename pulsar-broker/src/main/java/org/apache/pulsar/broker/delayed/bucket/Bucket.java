@@ -139,6 +139,7 @@ abstract class Bucket {
         final String bucketKey = bucket.bucketKey();
         final String cursorName = Codec.decode(cursor.getName());
         final String topicName = dispatcherName.substring(0, dispatcherName.lastIndexOf(" / " + cursorName));
+        // hn 重试3次
         return executeWithRetry(
                 () -> bucketSnapshotStorage.createBucketSnapshot(snapshotMetadata, bucketSnapshotSegments, bucketKey,
                                 topicName, cursorName)
@@ -147,7 +148,8 @@ abstract class Bucket {
                                 log.warn("[{}] Failed to create bucket snapshot, bucketKey: {}",
                                         dispatcherName, bucketKey, ex);
                             }
-                        }), BucketSnapshotPersistenceException.class, MaxRetryTimes).thenCompose(newBucketId -> {
+                        }), BucketSnapshotPersistenceException.class, MaxRetryTimes)
+                .thenCompose(newBucketId -> {
                     bucket.setBucketId(newBucketId);
 
                     return putBucketKeyId(bucketKey, newBucketId).exceptionally(ex -> {

@@ -1301,6 +1301,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
         this.leaderElectionService =
                 new LeaderElectionService(coordinationService, getBrokerId(), getSafeWebServiceAddress(),
                 state -> {
+                    // hn 抢到leader锁了后开启负载均衡任务 线上1分钟1次
                     if (state == LeaderElectionState.Leading) {
                         LOG.info("This broker {} was elected leader", getBrokerId());
                         if (getConfiguration().isLoadBalancerEnabled()) {

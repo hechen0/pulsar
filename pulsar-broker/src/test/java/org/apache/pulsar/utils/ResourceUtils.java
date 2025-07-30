@@ -26,6 +26,10 @@ public class ResourceUtils {
     public static String getAbsolutePath(String resourceName) {
         // On Windows, URL#getPath might return a string that starts with a disk name, e.g. "/C:/"
         // It's invalid to use this path to open a file, so we need to get the absolute path via File.
+
+        String cp = System.getProperty("java.class.path");
+        System.out.println(cp);
+
         return new File(Resources.getResource(resourceName).getPath()).getAbsolutePath();
     }
 }

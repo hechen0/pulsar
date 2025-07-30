@@ -63,10 +63,14 @@ public class ThresholdShedder implements LoadSheddingStrategy {
     public synchronized Multimap<String, String> findBundlesForUnloading(final LoadData loadData,
                                                                          final ServiceConfiguration conf) {
         selectedBundlesCache.clear();
+        // hn 超过平均值多少认定为需要卸载bundle 线上10%
         final double threshold = conf.getLoadBalancerBrokerThresholdShedderPercentage() / 100.0;
+        // hn 最近卸载过的bundle
         final Map<String, Long> recentlyUnloadedBundles = loadData.getRecentlyUnloadedBundles();
+        // hn bundle最低吞吐量10M
         final double minThroughputThreshold = conf.getLoadBalancerBundleUnloadMinThroughputThreshold() * MB;
 
+        // hn 集群使用均值
         final double avgUsage = getBrokerAvgUsage(loadData, conf.getLoadBalancerHistoryResourcePercentage(), conf);
 
         if (avgUsage == 0) {
@@ -74,6 +78,7 @@ public class ThresholdShedder implements LoadSheddingStrategy {
             return selectedBundlesCache;
         }
 
+        // hn 从zk的负载数据筛选broker
         loadData.getBrokerData().forEach((broker, brokerData) -> {
             final LocalBrokerData localData = brokerData.getLocalData();
             final double currentUsage = brokerAvgResourceUsage.getOrDefault(broker, 0.0);
@@ -85,8 +90,10 @@ public class ThresholdShedder implements LoadSheddingStrategy {
                 return;
             }
 
+            // hn 超出均值10%的部分 + 5% 的缓冲量
             double percentOfTrafficToOffload =
                     currentUsage - avgUsage - threshold + ADDITIONAL_THRESHOLD_PERCENT_MARGIN;
+            // hn 吞吐量是入口+出口
             double brokerCurrentThroughput = localData.getMsgThroughputIn() + localData.getMsgThroughputOut();
             double minimumThroughputToOffload = brokerCurrentThroughput * percentOfTrafficToOffload;
 
@@ -118,6 +125,7 @@ public class ThresholdShedder implements LoadSheddingStrategy {
                 log.warn("Broker {} is overloaded despite having no bundles", broker);
             }
         });
+        // hn 触发新扩容机器参与均衡 避免新扩容进来的达不到负载均衡条件而无法参与均衡
         if (selectedBundlesCache.isEmpty() && conf.isLowerBoundarySheddingEnabled()) {
             tryLowerBoundaryShedding(loadData, threshold, conf);
         }

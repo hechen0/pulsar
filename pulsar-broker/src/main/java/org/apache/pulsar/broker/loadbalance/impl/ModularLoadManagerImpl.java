@@ -628,12 +628,17 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
             return;
         }
         // Remove bundles who have been unloaded for longer than the grace period from the recently unloaded map.
+        // hn 当前时间 - 30分钟
         final long timeout = System.currentTimeMillis()
                 - TimeUnit.MINUTES.toMillis(conf.getLoadBalancerSheddingGracePeriodMinutes());
+        // hn 缓存
         final Map<String, Long> recentlyUnloadedBundles = loadData.getRecentlyUnloadedBundles();
+        // hn recentlyUnloadedBundles 保存的是当前时间戳 超过30分钟移除 下次可以继续
         recentlyUnloadedBundles.keySet().removeIf(e -> recentlyUnloadedBundles.get(e) < timeout);
 
+        // hn ? 什么场景需要排除 不参与负载均衡呢
         Set<String> sheddingExcludedNamespaces = conf.getLoadBalancerSheddingExcludedNamespaces();
+        // hn 找要卸载的bundle
         final Multimap<String, String> bundlesToUnload = loadSheddingStrategy.findBundlesForUnloading(loadData, conf);
 
         bundlesToUnload.asMap().forEach((broker, bundles) -> {
@@ -673,6 +678,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
                 try {
                     pulsar.getAdminClient().namespaces()
                             .unloadNamespaceBundle(namespaceName, bundleRange, destBroker.get());
+                    // hn bundle放到cache中，30分钟内不再负载均衡，为啥？
                     loadData.getRecentlyUnloadedBundles().put(bundle, System.currentTimeMillis());
                     unloadBundleCount++;
                     unloadBundleForBroker.set(true);
