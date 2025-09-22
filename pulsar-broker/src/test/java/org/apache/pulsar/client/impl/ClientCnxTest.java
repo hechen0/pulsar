@@ -99,6 +99,11 @@ public class ClientCnxTest extends MockedPulsarServiceBaseTest {
                 .messageListener((MessageListener<String>) (consumer1, msg) -> {
                     log.info(consumer1 + ": " + msg);
                     assert msg.getValue().startsWith("delayed hello world");
+                    try {
+                        consumer1.acknowledge(msg);
+                    }catch (Exception e) {
+
+                    }
                 })
                 .subscriptionType(SubscriptionType.Shared)
                 .subscriptionInitialPosition(SubscriptionInitialPosition.Earliest)

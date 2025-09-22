@@ -599,7 +599,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
         // hn 延迟到期的当前时间，有优化
         long cutoffTime = getCutoffTime();
 
-        // hn 把刚写入的挪到已到期队列中 如果到期的很多 这里的循环会执行很久吧？
+        // hn 把刚写入的挪到已到期队列中 如果同一时刻到期的很多 这里的循环会执行很久吧？ 这个地方处理是收敛的么？
         lastMutableBucket.moveScheduledMessageToSharedQueue(cutoffTime, sharedBucketPriorityQueue);
 
         NavigableSet<Position> positions = new TreeSet<>();

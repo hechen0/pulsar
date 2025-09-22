@@ -200,6 +200,7 @@ public abstract class MockedPulsarServiceBaseTest extends TestRetrySupport {
         ClientBuilder clientBuilder =
                 PulsarClient.builder()
                         .serviceUrl(url)
+                        .listenerThreads(1)
                         .statsInterval(intervalInSecs, TimeUnit.SECONDS)
                         .connectionTimeout(5, TimeUnit.MINUTES)
                         .lookupTimeout(5, TimeUnit.MINUTES)
