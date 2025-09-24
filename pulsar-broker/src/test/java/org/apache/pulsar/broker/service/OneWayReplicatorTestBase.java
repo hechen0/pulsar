@@ -22,10 +22,11 @@ import static org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest.BROKER_C
 import static org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest.BROKER_KEY_FILE_PATH;
 import static org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest.CA_CERT_FILE_PATH;
 import static org.apache.pulsar.compaction.Compactor.COMPACTION_SUBSCRIPTION;
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.assertEquals;
 import com.google.common.collect.Sets;
+import java.lang.reflect.Field;
 import java.net.URL;
 import java.time.Duration;
 import java.util.Arrays;
@@ -39,12 +40,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.Position;
-import org.apache.pulsar.broker.PulsarService;
-import org.apache.pulsar.broker.ServiceConfiguration;
-import org.apache.pulsar.broker.service.persistent.PersistentReplicator;
 import org.apache.bookkeeper.mledger.impl.ManagedCursorImpl;
 import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
+import org.apache.pulsar.broker.PulsarService;
+import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.service.persistent.GeoPersistentReplicator;
+import org.apache.pulsar.broker.service.persistent.PersistentReplicator;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.ClientBuilder;
@@ -52,6 +53,7 @@ import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.client.impl.ProducerImpl;
 import org.apache.pulsar.common.naming.SystemTopicNames;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.partition.PartitionedTopicMetadata;
@@ -371,12 +373,57 @@ public abstract class OneWayReplicatorTestBase extends TestRetrySupport {
     }
 
     protected void waitReplicatorStarted(String topicName) {
+        waitReplicatorStarted(topicName, pulsar2);
+    }
+
+    protected void waitReplicatorStarted(String topicName, PulsarService remoteCluster) {
         Awaitility.await().untilAsserted(() -> {
-            Optional<Topic> topicOptional2 = pulsar2.getBrokerService().getTopic(topicName, false).get();
+            Optional<Topic> topicOptional2 = remoteCluster.getBrokerService().getTopic(topicName, false).get();
             assertTrue(topicOptional2.isPresent());
             PersistentTopic persistentTopic2 = (PersistentTopic) topicOptional2.get();
             assertFalse(persistentTopic2.getProducers().isEmpty());
         });
+    }
+
+    protected void waitReplicatorStopped(String topicName, boolean remoteTopicExpectedDeleted) {
+        waitReplicatorStopped(topicName, pulsar1, pulsar2, remoteTopicExpectedDeleted);
+    }
+
+    protected void waitReplicatorStopped(String topicName, PulsarService sourceCluster, PulsarService remoteCluster,
+                                         boolean remoteTopicExpectedDeleted) {
+        Awaitility.await().untilAsserted(() -> {
+            Optional<Topic> remoteTp = remoteCluster.getBrokerService().getTopic(topicName, false).get();
+            if (remoteTopicExpectedDeleted) {
+                assertTrue(remoteTp.isEmpty());
+            } else {
+                assertTrue(remoteTp.isPresent());
+            }
+            if (remoteTp.isPresent()) {
+                PersistentTopic remoteTp1 = (PersistentTopic) remoteTp.get();
+                for (org.apache.pulsar.broker.service.Producer p : remoteTp1.getProducers().values()) {
+                    assertFalse(p.getProducerName().startsWith(remoteCluster.getConfig().getReplicatorPrefix()));
+                }
+            }
+            Optional<Topic> sourceTp = sourceCluster.getBrokerService().getTopic(topicName, false).get();
+            assertTrue(sourceTp.isPresent());
+            PersistentTopic sourceTp1 = (PersistentTopic) sourceTp.get();
+            assertTrue(sourceTp1.getReplicators().isEmpty()
+                    || !sourceTp1.getReplicators().get(remoteCluster.getConfig().getClusterName()).isConnected());
+        });
+    }
+
+    /**
+     * Override "AbstractReplicator.producer" by {@param producer} and return the original value.
+     */
+    protected ProducerImpl overrideProducerForReplicator(AbstractReplicator replicator, ProducerImpl newProducer)
+            throws Exception {
+        Field producerField = AbstractReplicator.class.getDeclaredField("producer");
+        producerField.setAccessible(true);
+        ProducerImpl originalValue = (ProducerImpl) producerField.get(replicator);
+        synchronized (replicator) {
+            producerField.set(replicator, newProducer);
+        }
+        return originalValue;
     }
 
     protected PulsarClient initClient(ClientBuilder clientBuilder) throws Exception {
@@ -420,27 +467,34 @@ public abstract class OneWayReplicatorTestBase extends TestRetrySupport {
 
     protected void setTopicLevelClusters(String topic, List<String> clusters, PulsarAdmin admin,
                                          PulsarService pulsar) throws Exception {
+        setTopicLevelClusters(topic, clusters, admin, pulsar, false);
+    }
+
+    protected void setTopicLevelClusters(String topic, List<String> clusters, PulsarAdmin admin,
+                                         PulsarService pulsar, boolean global) throws Exception {
         Set<String> expected = new HashSet<>(clusters);
         TopicName topicName = TopicName.get(TopicName.get(topic).getPartitionedTopicName());
         int partitions = ensurePartitionsAreSame(topic);
-        admin.topics().setReplicationClusters(topic, clusters);
+        admin.topicPolicies(global).setReplicationClusters(topic, clusters);
         Awaitility.await().untilAsserted(() -> {
-            TopicPolicies policies = TopicPolicyTestUtils.getTopicPolicies(pulsar.getTopicPoliciesService(), topicName);
+            TopicPolicies policies = TopicPolicyTestUtils.getTopicPolicies(pulsar.getTopicPoliciesService(), topicName,
+                    global);
             assertEquals(new HashSet<>(policies.getReplicationClusters()), expected);
             if (partitions == 0) {
-                checkNonPartitionedTopicLevelClusters(topicName.toString(), clusters, admin, pulsar.getBrokerService());
+                checkNonPartitionedTopicLevelClusters(topicName.toString(), clusters, admin, pulsar,
+                        global);
             } else {
                 for (int i = 0; i < partitions; i++) {
                     checkNonPartitionedTopicLevelClusters(topicName.getPartition(i).toString(), clusters, admin,
-                            pulsar.getBrokerService());
+                            pulsar, global);
                 }
             }
         });
     }
 
     protected void checkNonPartitionedTopicLevelClusters(String topic, List<String> clusters, PulsarAdmin admin,
-                                           BrokerService broker) throws Exception {
-        CompletableFuture<Optional<Topic>> future = broker.getTopic(topic, false);
+                                                         PulsarService pulsar, boolean global) throws Exception {
+        CompletableFuture<Optional<Topic>> future = pulsar.getBrokerService().getTopic(topic, false);
         if (future == null) {
             return;
         }
@@ -450,7 +504,9 @@ public abstract class OneWayReplicatorTestBase extends TestRetrySupport {
         }
         PersistentTopic persistentTopic = (PersistentTopic) optional.get();
         Set<String> expected = new HashSet<>(clusters);
-        Set<String> act = new HashSet<>(TopicPolicyTestUtils.getTopicPolicies(persistentTopic).getReplicationClusters());
+        Set<String> act = new HashSet<>(TopicPolicyTestUtils
+                .getTopicPolicies(pulsar.getTopicPoliciesService(), TopicName.get(persistentTopic.topic), global)
+                .getReplicationClusters());
         assertEquals(act, expected);
     }
 
@@ -510,7 +566,8 @@ public abstract class OneWayReplicatorTestBase extends TestRetrySupport {
             assertTrue(topicOptional1.isPresent());
             PersistentTopic persistentTopic1 = (PersistentTopic) topicOptional1.get();
             assertTrue(persistentTopic1.getReplicators().isEmpty()
-                    || !persistentTopic1.getReplicators().get(targetCluster.getConfig().getClusterName()).isConnected());
+                    || !persistentTopic1.getReplicators().get(targetCluster.getConfig().getClusterName())
+                    .isConnected());
         });
     }
 

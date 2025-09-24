@@ -29,7 +29,6 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.unix.Errors.NativeIoException;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.util.concurrent.Promise;
 import io.opentelemetry.api.common.Attributes;
@@ -102,6 +101,7 @@ import org.apache.pulsar.common.api.proto.CommandWatchTopicUpdate;
 import org.apache.pulsar.common.api.proto.ServerError;
 import org.apache.pulsar.common.lookup.GetTopicsResult;
 import org.apache.pulsar.common.protocol.Commands;
+import org.apache.pulsar.common.protocol.FrameDecoderUtil;
 import org.apache.pulsar.common.protocol.PulsarHandler;
 import org.apache.pulsar.common.protocol.schema.SchemaVersion;
 import org.apache.pulsar.common.schema.SchemaInfo;
@@ -206,6 +206,7 @@ public class ClientCnx extends PulsarHandler {
     private long lastDisconnectedTimestamp;
 
     protected final String clientVersion;
+    protected final String originalPrincipal;
 
     protected enum State {
         None, SentConnectFrame, Ready, Failed, Connecting
@@ -271,6 +272,7 @@ public class ClientCnx extends PulsarHandler {
         this.idleState = new ClientCnxIdleState(this);
         this.clientVersion = "Pulsar-Java-v" + PulsarVersion.getVersion()
                 + (conf.getDescription() == null ? "" : ("-" + conf.getDescription()));
+        this.originalPrincipal = conf.getOriginalPrincipal();
         this.connectionsOpenedCounter =
                 instrumentProvider.newCounter("pulsar.client.connection.opened", Unit.Connections,
                         "The number of connections opened", null, Attributes.empty());
@@ -320,7 +322,7 @@ public class ClientCnx extends PulsarHandler {
         authenticationDataProvider = authentication.getAuthData(remoteHostName);
         AuthData authData = authenticationDataProvider.authenticate(AuthData.INIT_AUTH_DATA);
         return Commands.newConnect(authentication.getAuthMethodName(), authData, this.protocolVersion,
-                clientVersion, proxyToTargetBrokerAddress, null, null, null);
+                clientVersion, proxyToTargetBrokerAddress, originalPrincipal, null, null);
     }
 
     @Override
@@ -397,8 +399,7 @@ public class ClientCnx extends PulsarHandler {
                           + "server frame size {}", ctx.channel(), connected.getMaxMessageSize());
             }
             maxMessageSize = connected.getMaxMessageSize();
-            ctx.pipeline().replace("frameDecoder", "newFrameDecoder", new LengthFieldBasedFrameDecoder(
-                connected.getMaxMessageSize() + Commands.MESSAGE_SIZE_FRAME_PADDING, 0, 4, 0, 4));
+            FrameDecoderUtil.replaceFrameDecoder(ctx.pipeline(), connected.getMaxMessageSize());
         }
         if (log.isDebugEnabled()) {
             log.debug("{} Connection is ready", ctx.channel());
@@ -788,20 +789,25 @@ public class ClientCnx extends PulsarHandler {
         long producerId = sendError.getProducerId();
         long sequenceId = sendError.getSequenceId();
 
+        ProducerImpl<?> producer = producers.get(producerId);
+        if (producer == null) {
+            log.warn("{} Producer with id {} not found while handling send error", ctx.channel(), producerId);
+            return;
+        }
+
         switch (sendError.getError()) {
         case ChecksumError:
-            producers.get(producerId).recoverChecksumError(this, sequenceId);
+            producer.recoverChecksumError(this, sequenceId);
             break;
-
         case TopicTerminatedError:
-            producers.get(producerId).terminated(this);
+            producer.terminated(this);
             break;
         case NotAllowedError:
-            producers.get(producerId).recoverNotAllowedError(sequenceId, sendError.getMessage());
+            producer.recoverNotAllowedError(sequenceId, sendError.getMessage());
             break;
         default:
             // don't close this ctx, otherwise it will close all consumers and producers which use this ctx
-            producers.get(producerId).connectionClosed(this, Optional.empty(), Optional.empty());
+            producer.connectionClosed(this, Optional.empty(), Optional.empty());
         }
     }
 
@@ -1506,6 +1512,9 @@ public class ClientCnx extends PulsarHandler {
             return false;
         }
         if (!transactionMetaStoreHandlers.isEmpty()) {
+            return false;
+        }
+        if (!topicListWatchers.isEmpty()) {
             return false;
         }
         return true;
