@@ -4219,6 +4219,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             return false;
         }
 
+        // hn 条数、大小、时间 三个维度限制ledger切换
         boolean spaceQuotaReached = (currentLedgerEntries >= config.getMaxEntriesPerLedger()
                 || currentLedgerSize >= (config.getMaxSizePerLedgerMb() * MegaByte));
 

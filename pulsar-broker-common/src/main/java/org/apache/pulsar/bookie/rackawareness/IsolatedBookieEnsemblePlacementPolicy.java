@@ -79,6 +79,7 @@ public class IsolatedBookieEnsemblePlacementPolicy extends RackawareEnsemblePlac
         }
         Set<String> primaryIsolationGroups = new HashSet<>();
         Set<String> secondaryIsolationGroups = new HashSet<>();
+        // hn 在这里初始化 bookkeeperClientIsolationGroups 用,分割的多个组
         if (conf.getProperty(ISOLATION_BOOKIE_GROUPS) != null) {
             String isolationGroupsString = ConfigurationStringUtil
                     .castToString(conf.getProperty(ISOLATION_BOOKIE_GROUPS));

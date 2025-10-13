@@ -236,6 +236,7 @@ public class ObjectMapperFactory {
         resolver.addMapping(BookieAffinityGroupData.class, BookieAffinityGroupDataImpl.class);
         resolver.addMapping(AuthPolicies.class, AuthPoliciesImpl.class);
         resolver.addMapping(AutoTopicCreationOverride.class, AutoTopicCreationOverrideImpl.class);
+        // hn 在这里注册的
         resolver.addMapping(BookieInfo.class, BookieInfoImpl.class);
         resolver.addMapping(BookiesClusterInfo.class, BookiesClusterInfoImpl.class);
         resolver.addMapping(BrokerInfo.class, BrokerInfoImpl.class);
