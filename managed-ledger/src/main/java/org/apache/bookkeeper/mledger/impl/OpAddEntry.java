@@ -368,6 +368,7 @@ public class OpAddEntry implements AddCallback, CloseCallback, Runnable, Managed
                     || rc.intValue() == BKException.Code.LedgerFencedException)) {
                 finalMl.addEntryFailedDueToConcurrentlyModified(lh, rc);
             } else {
+                // hn 写报错后 关掉ledger 重开一个新ledger继续写
                 finalMl.ledgerClosed(lh);
             }
         });
