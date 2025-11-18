@@ -929,6 +929,58 @@ public class ServiceConfiguration implements PulsarConfiguration {
 
     @FieldContext(
         category = CATEGORY_POLICIES,
+        doc = "It relates to configuration \"WriteBufferHighWaterMark\" of Netty Channel Config. If the number of bytes"
+            + " queued in the write buffer exceeds this value, channel writable state will start to return \"false\"."
+    )
+    private int pulsarChannelWriteBufferHighWaterMark = 64 * 1024;
+
+    @FieldContext(
+        category = CATEGORY_POLICIES,
+        doc = "It relates to configuration \"WriteBufferLowWaterMark\" of Netty Channel Config. If the number of bytes"
+                + " queued in the write buffer is smaller than this value, channel writable state will start to return"
+                + " \"true\"."
+    )
+    private int pulsarChannelWriteBufferLowWaterMark = 32 * 1024;
+
+    @FieldContext(
+        category = CATEGORY_POLICIES,
+        doc = "If enabled, the broker will pause reading from the channel to deal with new request once the writer"
+            + " buffer is full, until it is changed to writable."
+    )
+    private boolean pulsarChannelPauseReceivingRequestsIfUnwritable = false;
+
+    @FieldContext(
+            category = CATEGORY_POLICIES,
+            doc = "After the connection is recovered from a pause receiving state, the channel will be rate-limited"
+                + " for a time window to avoid overwhelming due to the backlog of requests. This parameter defines"
+                + " how long the rate limiting should last, in millis. Once the bytes that are waiting to be sent out"
+                + " reach the \"pulsarChannelWriteBufferHighWaterMark\"， the timer will be reset. Setting a negative"
+                + " value will disable the rate limiting."
+    )
+    private int pulsarChannelPauseReceivingCooldownMs = 5000;
+
+    @FieldContext(
+        category = CATEGORY_POLICIES,
+        doc = "After the connection is recovered from a pause receiving state, the channel will be rate-limited for a"
+            + " period of time to avoid overwhelming due to the backlog of requests. This parameter defines how"
+            + " many requests should be allowed in the rate limiting period."
+
+    )
+    private int pulsarChannelPauseReceivingCooldownRateLimitPermits = 5;
+
+    @FieldContext(
+        category = CATEGORY_POLICIES,
+        doc = "After the connection is recovered from a pause receiving state, the channel will be rate-limited for a"
+            + " period of time defined by pulsarChannelPauseReceivingCooldownMs to avoid overwhelming due to the"
+            + " backlog of requests. This parameter defines the period of the rate limiter in milliseconds. If the rate"
+            + " limit period is set to 1000, then the unit is requests per 1000 milliseconds. When it's 10, the unit"
+            + " is requests per every 10ms."
+
+    )
+    private int pulsarChannelPauseReceivingCooldownRateLimitPeriodMs = 10;
+
+    @FieldContext(
+        category = CATEGORY_POLICIES,
         doc = "The maximum number of connections per IP. If it exceeds, new connections are rejected."
     )
     private int brokerMaxConnectionsPerIp = 0;
@@ -1189,7 +1241,12 @@ public class ServiceConfiguration implements PulsarConfiguration {
     @FieldContext(
             dynamic = true,
             category = CATEGORY_POLICIES,
-            doc = "Default interval to publish usage reports if resourceUsagePublishToTopic is enabled."
+            doc = "Interval (in seconds) for ResourceGroupService periodic tasks while resource groups are actively "
+                    + "attached to tenants or namespaces. Periodic tasks start automatically when the first attachment "
+                    + "is registered and stop automatically when no attachments remain. "
+                    + "If a ResourceUsageTransportManager is configured (see resourceUsageTransportClassName), "
+                    + "this interval also controls how frequently, usage reports are published for cross-broker "
+                    + "coordination. Dynamic changes take effect at runtime and reschedule any running tasks."
     )
     private int resourceUsageTransportPublishIntervalInSecs = 60;
 
@@ -1333,6 +1390,42 @@ public class ServiceConfiguration implements PulsarConfiguration {
         category = CATEGORY_SERVER,
         doc = "Max number of concurrent lookup request broker allows to throttle heavy incoming lookup traffic")
     private int maxConcurrentLookupRequest = 50000;
+
+    @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Maximum heap memory for inflight topic list operations (MB).\n"
+                    + "Default: 100 MB (supports ~1M topic names assuming 100 bytes each)")
+    private int maxTopicListInFlightHeapMemSizeMB = 100;
+
+    @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Maximum direct memory for inflight topic list responses (MB).\n"
+                    + "Default: 100 MB (network buffers for serialized responses)")
+    private int maxTopicListInFlightDirectMemSizeMB = 100;
+
+    @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Timeout for acquiring heap memory permits (milliseconds).\n"
+                    + "Default: 25000 (25 seconds)")
+    private int maxTopicListInFlightHeapMemSizePermitsAcquireTimeoutMillis = 25000;
+
+    @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Maximum queue size for heap memory permit requests.\n"
+                    + "Default: 10000 (prevent unbounded queueing)")
+    private int maxTopicListInFlightHeapMemSizePermitsAcquireQueueSize = 10000;
+
+    @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Timeout for acquiring direct memory permits (milliseconds).\n"
+                    + "Default: 25000 (25 seconds)")
+    private int maxTopicListInFlightDirectMemSizePermitsAcquireTimeoutMillis = 25000;
+
+    @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Maximum queue size for direct memory permit requests.\n"
+                    + "Default: 10000 (prevent unbounded queueing)")
+    private int maxTopicListInFlightDirectMemSizePermitsAcquireQueueSize = 10000;
 
     @FieldContext(
         dynamic = true,
@@ -2210,6 +2303,11 @@ public class ServiceConfiguration implements PulsarConfiguration {
         doc = "Rate limit the amount of writes per second generated by consumer acking the messages"
     )
     private double managedLedgerDefaultMarkDeleteRateLimit = 1.0;
+    @FieldContext(
+            category = CATEGORY_STORAGE_ML,
+            doc = "Max number of concurrent requests for deleting ledgers at broker level"
+    )
+    private int managedLedgerDeleteMaxConcurrentRequests = 1000;
     @FieldContext(
         category = CATEGORY_STORAGE_ML,
         dynamic = true,

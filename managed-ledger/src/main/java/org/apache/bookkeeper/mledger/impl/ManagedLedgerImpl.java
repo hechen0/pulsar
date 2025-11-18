@@ -57,6 +57,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -354,6 +355,11 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     private long lastEvictOffloadedLedgers;
     private static final int MINIMUM_EVICTION_INTERVAL_DIVIDER = 10;
 
+    // Semaphore to limit concurrent ledger deletion
+    private Semaphore deleteLedgerSemaphore = null;
+    // Executor service for executing ledger deletion tasks
+    private ExecutorService deleteLedgerExecutor = null;
+
     public ManagedLedgerImpl(ManagedLedgerFactoryImpl factory, BookKeeper bookKeeper, MetaStore store,
             ManagedLedgerConfig config, OrderedScheduler scheduledExecutor,
             final String name) {
@@ -402,6 +408,10 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         this.minBacklogEntriesForCaching = config.getMinimumBacklogEntriesForCaching();
         this.maxBacklogBetweenCursorsForCaching = config.getMaxBacklogBetweenCursorsForCaching();
         this.managedLedgerAttributes = new ManagedLedgerAttributes(this);
+        if (config.getLedgerDeletionSemaphore() != null) {
+            this.deleteLedgerSemaphore = config.getLedgerDeletionSemaphore();
+            this.deleteLedgerExecutor = config.getLedgerDeleteExecutor();
+        }
     }
 
     synchronized void initialize(final ManagedLedgerInitializeLedgerCallback callback, final Object ctx) {
@@ -571,7 +581,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             public void operationComplete(Void v, Stat stat) {
                 ledgersStat = stat;
                 emptyLedgersToBeDeleted.forEach(ledgerId -> {
-                    bookKeeper.asyncDeleteLedger(ledgerId, (rc, ctx) -> {
+                    asyncDeleteLedgerWithConcurrencyLimit(ledgerId, (rc, ctx) -> {
                         log.info("[{}] Deleted empty ledger ledgerId={} rc={}", name, ledgerId, rc);
                     }, null);
                 });
@@ -1766,7 +1776,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                     log.warn("[{}] Error updating meta data with the new list of ledgers: {}", name, e.getMessage());
                     handleBadVersion(e);
                     mbean.startDataLedgerDeleteOp();
-                    bookKeeper.asyncDeleteLedger(lh.getId(), (rc1, ctx1) -> {
+                    asyncDeleteLedgerWithConcurrencyLimit(lh.getId(), (rc1, ctx1) -> {
                         mbean.endDataLedgerDeleteOp();
                         if (rc1 != BKException.Code.OK) {
                             log.warn("[{}] Failed to delete ledger {}: {}", name, lh.getId(),
@@ -1849,7 +1859,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         STATE_UPDATER.set(this, State.LedgerOpened);
         // Delete original "currentLedger" if it has been removed from "ledgers".
         if (originalCurrentLedger != null && !ledgers.containsKey(originalCurrentLedger.getId())){
-            bookKeeper.asyncDeleteLedger(originalCurrentLedger.getId(), (rc, ctx) -> {
+            asyncDeleteLedgerWithConcurrencyLimit(originalCurrentLedger.getId(), (rc, ctx) -> {
                 mbean.endDataLedgerDeleteOp();
                 log.info("[{}] Delete complete for empty ledger {}. rc={}", name, originalCurrentLedger.getId(), rc);
             }, null);
@@ -2707,7 +2717,8 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
 
     public void maybeUpdateCursorBeforeTrimmingConsumedLedger() {
         for (ManagedCursor cursor : cursors) {
-            Position lastAckedPosition = cursor.getMarkDeletedPosition();
+            Position lastAckedPosition = cursor.getPersistentMarkDeletedPosition() != null
+                    ? cursor.getPersistentMarkDeletedPosition() : cursor.getMarkDeletedPosition();
             LedgerInfo currPointedLedger = ledgers.get(lastAckedPosition.getLedgerId());
             LedgerInfo nextPointedLedger = Optional.ofNullable(ledgers.higherEntry(lastAckedPosition.getLedgerId()))
                     .map(Map.Entry::getValue).orElse(null);
@@ -3401,7 +3412,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     private void asyncDeleteLedgerWithRetry(CompletableFuture<Void> future, long ledgerId, long retry) {
-        bookKeeper.asyncDeleteLedger(ledgerId, (rc, ctx) -> {
+        asyncDeleteLedgerWithConcurrencyLimit(ledgerId, (rc, ctx) -> {
             if (isNoSuchLedgerExistsException(rc)) {
                 log.warn("[{}] Ledger was already deleted {}", name, ledgerId);
                 future.complete(null);
@@ -3424,6 +3435,33 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         }, null);
     }
 
+    /**
+     * Delete a ledger asynchronously, applying a concurrency limit if configured.
+     * @param ledgerId
+     * @param cb
+     * @param ctx
+     */
+    private void asyncDeleteLedgerWithConcurrencyLimit(long ledgerId,
+                                                       org.apache.bookkeeper.client.AsyncCallback.DeleteCallback cb,
+                                                       Object ctx) {
+        if (deleteLedgerSemaphore != null) {
+            AsyncCallback.DeleteCallback cbWrapper = (rc, ctx1) -> {
+                deleteLedgerSemaphore.release();
+                cb.deleteComplete(rc, ctx1);
+            };
+            deleteLedgerExecutor.execute(() -> {
+                try {
+                    deleteLedgerSemaphore.acquire();
+                    bookKeeper.asyncDeleteLedger(ledgerId, cbWrapper, ctx);
+                } catch (InterruptedException e) {
+                    log.error("[{}] Interrupted while waiting to delete ledger {}", name, ledgerId);
+                }
+            });
+        } else {
+            bookKeeper.asyncDeleteLedger(ledgerId, cb, ctx);
+        }
+    }
+
     @SuppressWarnings("checkstyle:fallthrough")
     private void deleteAllLedgers(DeleteLedgerCallback callback, Object ctx) {
         List<LedgerInfo> ledgers = Lists.newArrayList(ManagedLedgerImpl.this.ledgers.values());
@@ -3438,7 +3476,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Deleting ledger {}", name, ls);
             }
-            bookKeeper.asyncDeleteLedger(ls.getLedgerId(), (rc, ctx1) -> {
+            asyncDeleteLedgerWithConcurrencyLimit(ls.getLedgerId(), (rc, ctx1) -> {
                 switch (rc) {
                 case Code.NoSuchLedgerExistsException:
                 case Code.NoSuchLedgerExistsOnMetadataServerException:
@@ -3847,6 +3885,32 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     /**
+     * Compare two positions. It is different with {@link Position#compareTo(Position)} when the params are invalid.
+     * For example: position-1 is "1:{latest entry}", and position-2 is "2:-1", they are the same position.
+     */
+    @VisibleForTesting
+    int comparePositions(Position pos1, Position pos2) {
+        if (pos1 == null || pos2 == null) {
+            throw new IllegalArgumentException("Positions must not be null");
+        }
+        if (ledgers.isEmpty() || pos1.getLedgerId() < getFirstPosition().getLedgerId()
+                || pos2.getLedgerId() < getFirstPosition().getLedgerId()
+                || pos1.getLedgerId() > getLastPosition().getLedgerId()
+                || pos2.getLedgerId() > getLastPosition().getLedgerId()) {
+            log.warn("[{}] Comparing un-exist position {} and {}", name, pos1, pos2,
+                    new IllegalArgumentException("Comparing un-exist position"));
+            return pos1.compareTo(pos2);
+        }
+        if (pos1.getLedgerId() == pos2.getLedgerId()) {
+            return Long.compare(pos1.getEntryId(), pos2.getEntryId());
+        }
+        if (!isValidPosition(pos1) || !isValidPosition(pos2)) {
+            return getNextValidPosition(pos1).compareTo(getNextValidPosition(pos2));
+        }
+        return pos1.compareTo(pos2);
+    }
+
+    /**
      * Get the number of entries between a contiguous range of two positions.
      *
      * @param range
@@ -3858,39 +3922,77 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         boolean fromIncluded = range.lowerBoundType() == BoundType.CLOSED;
         Position toPosition = range.upperEndpoint();
         boolean toIncluded = range.upperBoundType() == BoundType.CLOSED;
+        if (comparePositions(fromPosition, toPosition) > 0) {
+            log.warn("[{}] Getting number of entries with an invalid range {} and {}", name, fromPosition, toPosition);
+            throw new IllegalArgumentException("Invalid range " + range);
+        }
 
-        // hn 如果是同一个ledger，只要看entry相差多少
+        // 1. If the "fromPosition" is after "toPosition", then there is no entry in the range.
+        // 2. If both "formPosition" and "toPosition" have negative entry id amd in the same ledger, then there is no
+        //    entry in the range.
+        if (fromPosition.getLedgerId() > toPosition.getLedgerId()
+            || (fromPosition.getLedgerId() == toPosition.getLedgerId()
+                && fromPosition.getEntryId() > toPosition.getEntryId())
+            || (fromPosition.getLedgerId() == toPosition.getLedgerId()
+                && fromPosition.getEntryId() < 0 && toPosition.getEntryId() < 0)) {
+            return 0;
+        }
+
+        // If the 2 positions are in the same ledger.
         if (fromPosition.getLedgerId() == toPosition.getLedgerId()) {
-            // If the 2 positions are in the same ledger
-            // hn 同一个ledgerId中的entryId如何保证一定是单调递增 不出现空洞？
-            long count = toPosition.getEntryId() - fromPosition.getEntryId() - 1;
-            count += fromIncluded ? 1 : 0;
-            count += toIncluded ? 1 : 0;
-            return count;
-        } else {
-            // hn 如果是不同的ledger 需要加上中间所有的ledger的entry数量
-            long count = 0;
-            // If the from & to are pointing to different ledgers, then we need to :
-            // 1. Add the entries in the ledger pointed by toPosition
-            count += toPosition.getEntryId();
-            count += toIncluded ? 1 : 0;
-
-            // 2. Add the entries in the ledger pointed by fromPosition
-            LedgerInfo li = ledgers.get(fromPosition.getLedgerId());
+            LedgerInfo li = ledgers.get(toPosition.getLedgerId());
             if (li != null) {
-                count += li.getEntries() - (fromPosition.getEntryId() + 1);
+                // If the 2 positions are in the same ledger
+                long count = toPosition.getEntryId() - fromPosition.getEntryId() - 1;
+                count += fromIncluded && fromPosition.getEntryId() >= 0 ? 1 : 0;
+                count += toIncluded && toPosition.getEntryId() >= 0 ? 1 : 0;
+                return count;
+            } else {
+                // if the ledgerId is not in the ledgers, it means it has been deleted
+                return 0;
+            }
+        }
+
+        // If the "fromPosition.ledgerId" is larger than "toPosition.ledgerId".
+        // 1. Add the entries in the ledger pointed by toPosition.
+        // 2. Add the entries in the ledger pointed by fromPosition.
+        // 3. Add the whole ledgers entries in between.
+        long count = 0;
+
+        // 1. Add the entries in the ledger pointed by toPosition.
+        //    Add nothing if "toPosition" does not exit in "ledgers".
+        //    Add nothing if "toPosition.entryId < 0".
+        LedgerInfo toLedger = ledgers.get(toPosition.getLedgerId());
+        if (toPosition.getEntryId() >= 0 && toLedger != null) {
+            // To support the use case "cursor.getNumberOfEntries()", which will use a "toPosition" that is larger
+            // than the LAC.
+            // To support this case, use "Long.MAX_VALUE" if the ledger is the last one.
+            long entriesInLedger = comparePositions(toPosition, lastConfirmedEntry) >= 0
+                    ? Long.MAX_VALUE : toLedger.getEntries();
+            count += Math.min(toPosition.getEntryId(), entriesInLedger - 1);
+            count += toIncluded ? 1 : 0;
+        }
+
+        // 2. Add the entries in the ledger pointed by fromPosition.
+        //    Add nothing if "toPosition.entryId < 0".
+        //    Add nothing if "toPosition" does not exit in "ledgers".
+        LedgerInfo formLedger = ledgers.get(fromPosition.getLedgerId());
+        if (formLedger != null) {
+            if (fromPosition.getEntryId() < 0) {
+                count += formLedger.getEntries();
+            } else {
+                count += formLedger.getEntries() - (fromPosition.getEntryId() + 1);
                 count += fromIncluded ? 1 : 0;
             }
-
-            // 3. Add the whole ledgers entries in between
-            for (LedgerInfo ls : ledgers.subMap(fromPosition.getLedgerId(), false, toPosition.getLedgerId(), false)
-                    .values()) {
-                // hn ledger中的元信息如何保证和实际存储是一致的
-                count += ls.getEntries();
-            }
-
-            return count;
         }
+
+        // 3. Add the whole ledgers entries in between
+        for (LedgerInfo ls : ledgers.subMap(fromPosition.getLedgerId(), false, toPosition.getLedgerId(), false)
+                .values()) {
+            count += ls.getEntries();
+        }
+
+        return count;
     }
 
     /**

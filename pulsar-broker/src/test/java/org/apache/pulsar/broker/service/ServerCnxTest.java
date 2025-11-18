@@ -105,6 +105,7 @@ import org.apache.pulsar.broker.authentication.AuthenticationState;
 import org.apache.pulsar.broker.authorization.AuthorizationService;
 import org.apache.pulsar.broker.authorization.PulsarAuthorizationProvider;
 import org.apache.pulsar.broker.namespace.NamespaceService;
+import org.apache.pulsar.broker.namespace.TopicExistsInfo;
 import org.apache.pulsar.broker.service.BrokerServiceException.ServiceUnitNotReadyException;
 import org.apache.pulsar.broker.service.ServerCnx.State;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
@@ -231,14 +232,14 @@ public class ServerCnxTest {
                 .getBundleAsync(any());
         doReturn(CompletableFuture.completedFuture(true)).when(namespaceService).checkBundleOwnership(any(), any());
         doReturn(true).when(namespaceService).isServiceUnitOwned(any());
-        doReturn(true).when(namespaceService).isServiceUnitActive(any());
-        doReturn(CompletableFuture.completedFuture(true)).when(namespaceService).isServiceUnitActiveAsync(any());
         doReturn(CompletableFuture.completedFuture(topics)).when(namespaceService).getListOfTopics(
                 NamespaceName.get("use", "ns-abc"), CommandGetTopicsOfNamespace.Mode.ALL);
         doReturn(CompletableFuture.completedFuture(topics)).when(namespaceService).getListOfUserTopics(
                 NamespaceName.get("use", "ns-abc"), CommandGetTopicsOfNamespace.Mode.ALL);
         doReturn(CompletableFuture.completedFuture(topics)).when(namespaceService).getListOfPersistentTopics(
                 NamespaceName.get("use", "ns-abc"));
+        doReturn(CompletableFuture.completedFuture(TopicExistsInfo.newTopicNotExists())).when(namespaceService)
+                .checkTopicExistsAsync(any());
 
         setupMLAsyncCallbackMocks();
 
@@ -1601,8 +1602,8 @@ public class ServerCnxTest {
         setChannelConnected();
 
         // Force the case where the broker doesn't own any topic
-        doReturn(CompletableFuture.completedFuture(false)).when(namespaceService)
-                .isServiceUnitActiveAsync(any(TopicName.class));
+        doReturn(CompletableFuture.failedFuture(new ServiceUnitNotReadyException("failed"))).when(brokerService)
+                .checkTopicNsOwnership(any(String.class));
 
         // test PRODUCER failure case
         ByteBuf clientCommand = Commands.newProducer(nonOwnedTopicName, 1 /* producer id */, 1 /* request id */,
