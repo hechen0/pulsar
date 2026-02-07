@@ -209,7 +209,8 @@ public class PersistentSubscription extends AbstractSubscription {
             this.replicatedSubscriptionSnapshotCache = null;
         } else if (this.replicatedSubscriptionSnapshotCache == null) {
             this.replicatedSubscriptionSnapshotCache = new ReplicatedSubscriptionSnapshotCache(subName,
-                    config.getReplicatedSubscriptionsSnapshotMaxCachedPerSubscription());
+                    config.getReplicatedSubscriptionsSnapshotMaxCachedPerSubscription(),
+                    getCursor().getManagedLedger()::getNumberOfEntries);
         }
 
         if (this.cursor != null) {
@@ -468,21 +469,6 @@ public class PersistentSubscription extends AbstractSubscription {
             }
         }
 
-        if (!cursor.getMarkDeletedPosition().equals(previousMarkDeletePosition)) {
-            this.updateLastMarkDeleteAdvancedTimestamp();
-
-            // Mark delete position advance
-            ReplicatedSubscriptionSnapshotCache snapshotCache = this.replicatedSubscriptionSnapshotCache;
-            if (snapshotCache != null) {
-                ReplicatedSubscriptionsSnapshot snapshot = snapshotCache
-                        .advancedMarkDeletePosition(cursor.getMarkDeletedPosition());
-                if (snapshot != null) {
-                    topic.getReplicatedSubscriptionController()
-                            .ifPresent(c -> c.localSubscriptionUpdated(subName, snapshot));
-                }
-            }
-        }
-
         if (topic.getManagedLedger().isTerminated() && cursor.getNumberOfEntriesInBacklog(false) == 0) {
             // Notify all consumer that the end of topic was reached
             if (dispatcher != null) {
@@ -515,7 +501,7 @@ public class PersistentSubscription extends AbstractSubscription {
                 dispatcher.afterAckMessages(null, ctx);
             }
             // Signal the dispatchers to give chance to take extra actions
-            notifyTheMarkDeletePositionMoveForwardIfNeeded(oldMD);
+            notifyTheMarkDeletePositionChanged(oldMD);
         }
 
         @Override
@@ -542,7 +528,7 @@ public class PersistentSubscription extends AbstractSubscription {
             if (dispatcher != null) {
                 dispatcher.afterAckMessages(null, context);
             }
-            notifyTheMarkDeletePositionMoveForwardIfNeeded((Position) context);
+            notifyTheMarkDeletePositionChanged((Position) context);
         }
 
         @Override
@@ -555,11 +541,43 @@ public class PersistentSubscription extends AbstractSubscription {
         }
     };
 
-    private void notifyTheMarkDeletePositionMoveForwardIfNeeded(Position oldPosition) {
-        Position oldMD = oldPosition;
+    /**
+     * This method is called after acknowledgements (such as individual acks) have been processed and the mark-delete
+     * position has possibly been updated and advanced after "ack holes" have been filled up by the latest individual
+     * acknowledgements.
+     * @param oldPosition previous mark-delete position before the update
+     */
+    private void notifyTheMarkDeletePositionChanged(Position oldPosition) {
         Position newMD = cursor.getMarkDeletedPosition();
-        if (dispatcher != null && newMD.compareTo(oldMD) > 0) {
-            dispatcher.markDeletePositionMoveForward();
+
+        // check if the mark delete position has changed since the last call
+        if (newMD.compareTo(oldPosition) != 0) {
+            updateLastMarkDeleteAdvancedTimestamp();
+            handleReplicatedSubscriptionsUpdate(newMD);
+
+            if (dispatcher != null) {
+                dispatcher.markDeletePositionMoveForward();
+            }
+        }
+    }
+
+    /**
+     * Checks the snapshot cache for a snapshot that corresponds to the given mark-delete position.
+     * If a snapshot is found, it will notify the replicated subscription controller that the local subscription
+     * has been updated.
+     * This method is called when the mark-delete position is advanced or when a new snapshot is added to the cache.
+     * When the new snapshot is added, it might be suitable for the current mark-delete position.
+     * @param markDeletePosition the mark delete position to check for a snapshot
+     */
+    private void handleReplicatedSubscriptionsUpdate(Position markDeletePosition) {
+        ReplicatedSubscriptionSnapshotCache snapshotCache = this.replicatedSubscriptionSnapshotCache;
+        if (snapshotCache != null) {
+            ReplicatedSubscriptionSnapshotCache.SnapshotResult snapshot = snapshotCache
+                    .advancedMarkDeletePosition(markDeletePosition);
+            if (snapshot != null) {
+                topic.getReplicatedSubscriptionController()
+                        .ifPresent(c -> c.localSubscriptionUpdated(subName, snapshot));
+            }
         }
     }
 
@@ -618,6 +636,7 @@ public class PersistentSubscription extends AbstractSubscription {
         AtomicLong rejected = new AtomicLong();
         AtomicLong rescheduled = new AtomicLong();
         AtomicLong messages = new AtomicLong();
+        AtomicLong markerMessages = new AtomicLong();
         AtomicLong acceptedMessages = new AtomicLong();
         AtomicLong rejectedMessages = new AtomicLong();
         AtomicLong rescheduledMessages = new AtomicLong();
@@ -649,6 +668,10 @@ public class PersistentSubscription extends AbstractSubscription {
                 messageMetadata = entry.getMessageMetadata();
             } else {
                 messageMetadata = Commands.peekMessageMetadata(metadataAndPayload, "", -1);
+            }
+            if (messageMetadata.hasMarkerType()) {
+                markerMessages.incrementAndGet();
+                return true;
             }
             int numMessages = 1;
             if (messageMetadata.hasNumMessagesInBatch()) {
@@ -699,6 +722,7 @@ public class PersistentSubscription extends AbstractSubscription {
             result.setLastPosition(lastPosition.get());
             result.setEntries(entries.get());
             result.setMessages(messages.get());
+            result.setMarkerMessages(markerMessages.get());
             result.setFilterAcceptedEntries(accepted.get());
             result.setFilterAcceptedMessages(acceptedMessages.get());
             result.setFilterRejectedEntries(rejected.get());
@@ -812,7 +836,12 @@ public class PersistentSubscription extends AbstractSubscription {
 
     @Override
     public CompletableFuture<Void> resetCursor(long timestamp) {
-        CompletableFuture<Void> future = new CompletableFuture<>();
+        if (!IS_FENCED_UPDATER.compareAndSet(PersistentSubscription.this, FALSE, TRUE)) {
+            return CompletableFuture.failedFuture(new SubscriptionBusyException("Failed to fence subscription"));
+        }
+
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+        inProgressResetCursorFuture = future;
         PersistentMessageFinder persistentMessageFinder = new PersistentMessageFinder(topicName, cursor,
                 config.getManagedLedgerCursorResetLedgerCloseTimestampMaxClockSkewMillis());
 
@@ -831,6 +860,8 @@ public class PersistentSubscription extends AbstractSubscription {
                         log.warn("[{}][{}] Unable to find position for timestamp {}."
                                         + " Unable to reset cursor to first position",
                                 topicName, subName, timestamp);
+                        IS_FENCED_UPDATER.set(PersistentSubscription.this, FALSE);
+                        inProgressResetCursorFuture = null;
                         future.completeExceptionally(
                                 new SubscriptionInvalidCursorPosition(
                                         "Unable to find position for specified timestamp"));
@@ -843,7 +874,7 @@ public class PersistentSubscription extends AbstractSubscription {
                 } else {
                     finalPosition = position.getNext();
                 }
-                CompletableFuture<Void> resetCursorFuture = resetCursor(finalPosition);
+                CompletableFuture<Void> resetCursorFuture = resetCursorInternal(finalPosition, future, true);
                 FutureUtil.completeAfter(future, resetCursorFuture);
             }
 
@@ -851,6 +882,8 @@ public class PersistentSubscription extends AbstractSubscription {
             public void findEntryFailed(ManagedLedgerException exception,
                                         Optional<Position> failedReadPosition, Object ctx) {
                 // todo - what can go wrong here that needs to be retried?
+                IS_FENCED_UPDATER.set(PersistentSubscription.this, FALSE);
+                inProgressResetCursorFuture = null;
                 if (exception instanceof ConcurrentFindCursorPositionException) {
                     future.completeExceptionally(new SubscriptionBusyException(exception.getMessage()));
                 } else {
@@ -864,11 +897,17 @@ public class PersistentSubscription extends AbstractSubscription {
 
     @Override
     public CompletableFuture<Void> resetCursor(Position finalPosition) {
-        if (!IS_FENCED_UPDATER.compareAndSet(PersistentSubscription.this, FALSE, TRUE)) {
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+        return resetCursorInternal(finalPosition, future, false);
+    }
+
+    private CompletableFuture<Void> resetCursorInternal(Position finalPosition, CompletableFuture<Void> future,
+                                                        boolean alreadyFenced) {
+        if (!alreadyFenced
+                && !IS_FENCED_UPDATER.compareAndSet(PersistentSubscription.this, FALSE, TRUE)) {
             return CompletableFuture.failedFuture(new SubscriptionBusyException("Failed to fence subscription"));
         }
 
-        final CompletableFuture<Void> future = new CompletableFuture<>();
         inProgressResetCursorFuture = future;
         final CompletableFuture<Void> disconnectFuture;
 
@@ -1570,6 +1609,8 @@ public class PersistentSubscription extends AbstractSubscription {
         ReplicatedSubscriptionSnapshotCache snapshotCache = this.replicatedSubscriptionSnapshotCache;
         if (snapshotCache != null) {
             snapshotCache.addNewSnapshot(new ReplicatedSubscriptionsSnapshot().copyFrom(snapshot));
+            // check if the newly added snapshot can be used with the current mark delete position
+            handleReplicatedSubscriptionsUpdate(cursor.getMarkDeletedPosition());
         }
     }
 

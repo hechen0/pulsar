@@ -50,6 +50,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import lombok.Builder;
 import lombok.Getter;
 import org.apache.commons.lang3.tuple.Pair;
@@ -270,14 +271,7 @@ public class PulsarClientImpl implements PulsarClient {
             } else {
                 this.timer = timer;
             }
-            if (conf.getServiceUrl().startsWith("http")) {
-                lookup = new HttpLookupService(instrumentProvider, conf, this.eventLoopGroup, this.timer,
-                        getNameResolver());
-            } else {
-                lookup = new BinaryProtoLookupService(this, conf.getServiceUrl(), conf.getListenerName(),
-                        conf.isUseTls(), this.scheduledExecutorProvider.getExecutor(),
-                        this.lookupExecutorProvider.getExecutor());
-            }
+            lookup = createLookup(conf.getServiceUrl());
 
             if (conf.getServiceUrlProvider() != null) {
                 conf.getServiceUrlProvider().initialize(this);
@@ -424,7 +418,7 @@ public class PulsarClientImpl implements PulsarClient {
 
         if (schema instanceof AutoProduceBytesSchema) {
             AutoProduceBytesSchema autoProduceBytesSchema = (AutoProduceBytesSchema) schema;
-            if (autoProduceBytesSchema.schemaInitialized()) {
+            if (autoProduceBytesSchema.hasUserProvidedSchema()) {
                 return createProducerAsync(topic, conf, schema, interceptors);
             }
             return lookup.getSchema(TopicName.get(conf.getTopicName()))
@@ -693,9 +687,14 @@ public class PulsarClientImpl implements PulsarClient {
                                 conf.getSubscriptionName(), namespaceName, topicName));
                 }
 
-                List<String> topicsList = getTopicsResult.getTopics();
+                List<String> topicsList;
                 if (!getTopicsResult.isFiltered()) {
                    topicsList = TopicList.filterTopics(getTopicsResult.getTopics(), pattern);
+                } else {
+                    // deduplicate java.lang.String instances using TopicName's cache
+                    topicsList = getTopicsResult.getTopics().stream()
+                            .map(TopicName::get).map(TopicName::toString)
+                            .collect(Collectors.toList());
                 }
                 conf.getTopicNames().addAll(topicsList);
 
@@ -708,7 +707,6 @@ public class PulsarClientImpl implements PulsarClient {
                 conf.setAutoUpdatePartitions(false);
                 // hn 这个地方如何确保topic更新能及时感知的？
                 ConsumerBase<T> consumer = new PatternMultiTopicsConsumerImpl<>(pattern,
-                        getTopicsResult.getTopicsHash(),
                         PulsarClientImpl.this,
                         conf,
                         externalExecutorProvider,
@@ -1149,7 +1147,7 @@ public class PulsarClientImpl implements PulsarClient {
     }
 
     public CompletableFuture<ClientCnx> getConnectionToServiceUrl() {
-        if (!(lookup instanceof BinaryProtoLookupService)) {
+        if (!lookup.isBinaryProtoLookupService()) {
             return FutureUtil.failedFuture(new PulsarClientException.InvalidServiceURL(
                     "Can't get client connection to HTTP service URL", null));
         }
@@ -1159,7 +1157,7 @@ public class PulsarClientImpl implements PulsarClient {
 
     public CompletableFuture<ClientCnx> getProxyConnection(final InetSocketAddress logicalAddress,
                                                            final int randomKeyForSelectConnection) {
-        if (!(lookup instanceof BinaryProtoLookupService)) {
+        if (!lookup.isBinaryProtoLookupService()) {
             return FutureUtil.failedFuture(new PulsarClientException.InvalidServiceURL(
                     "Cannot proxy connection through HTTP service URL", null));
         }
@@ -1228,12 +1226,15 @@ public class PulsarClientImpl implements PulsarClient {
     }
 
     public LookupService createLookup(String url) throws PulsarClientException {
+        LookupService lookupService;
         if (url.startsWith("http")) {
-            return new HttpLookupService(instrumentProvider, conf, eventLoopGroup, timer, getNameResolver());
+            lookupService = new HttpLookupService(instrumentProvider, conf, eventLoopGroup, timer, getNameResolver());
         } else {
-            return new BinaryProtoLookupService(this, url, conf.getListenerName(), conf.isUseTls(),
-                    externalExecutorProvider.getExecutor());
+            lookupService = new BinaryProtoLookupService(this, url, conf.getListenerName(), conf.isUseTls(),
+                    this.scheduledExecutorProvider.getExecutor(), this.lookupExecutorProvider.getExecutor());
         }
+        return new InProgressDeduplicationDecoratorLookupService(lookupService,
+                () -> getConfiguration().getLookupProperties());
     }
 
     /**
@@ -1366,10 +1367,11 @@ public class PulsarClientImpl implements PulsarClient {
                                                                       String topicName) {
         if (schema != null && schema.supportSchemaVersioning()) {
             final SchemaInfoProvider schemaInfoProvider;
+            String schemaTopicName = TopicName.getPartitionedTopicName(topicName).toString();
             try {
-                schemaInfoProvider = pulsarClientImpl.getSchemaProviderLoadingCache().get(topicName);
+                schemaInfoProvider = pulsarClientImpl.getSchemaProviderLoadingCache().get(schemaTopicName);
             } catch (ExecutionException e) {
-                log.error("Failed to load schema info provider for topic {}", topicName, e);
+                log.error("Failed to load schema info provider for topic {}", schemaTopicName, e);
                 return FutureUtil.failedFuture(e.getCause());
             }
             schema = schema.clone();
@@ -1409,7 +1411,7 @@ public class PulsarClientImpl implements PulsarClient {
         return scheduledExecutorProvider;
     }
 
-    InstrumentProvider instrumentProvider() {
+    public InstrumentProvider instrumentProvider() {
         return instrumentProvider;
     }
 
