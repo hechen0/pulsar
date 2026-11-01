@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -407,6 +408,188 @@ public class MultiTopicsConsumerTest extends SharedPulsarBaseTest {
                 IntStream.rangeClosed(1, numMessagesPerPartition - 1).boxed().collect(Collectors.toList()));
         assertEquals(valuesPerPartition.get(topic + TopicName.PARTITIONED_TOPIC_SUFFIX + 1),
                 IntStream.rangeClosed(0, numMessagesPerPartition - 1).boxed().collect(Collectors.toList()));
+    }
+
+    @Test(timeOut = 60000)
+    public void testSeekOnePartitionKeepsUnackedRedeliveryOfOtherPartitions() throws Exception {
+        final var topic = TopicName.get(newTopicName()).toString();
+        final var numPartitions = 2;
+        admin.topics().createPartitionedTopic(topic, numPartitions);
+
+        @Cleanup final var producer = pulsarClient.newProducer(Schema.INT32)
+                .topic(topic)
+                .enableBatching(false)
+                .messageRouter(new MessageRouter() {
+                    int index = 0;
+                    @Override
+                    public int choosePartition(Message<?> msg, TopicMetadata metadata) {
+                        return index++ % metadata.numPartitions();
+                    }
+                })
+                .create();
+        // Shared subscription with an ack timeout, so unacked messages are redelivered
+        @Cleanup final var consumer = pulsarClient.newConsumer(Schema.INT32)
+                .topic(topic)
+                .subscriptionName("sub")
+                .subscriptionType(SubscriptionType.Shared)
+                .ackTimeout(3, TimeUnit.SECONDS)
+                .subscribe();
+
+        final var numMessagesPerPartition = 10;
+        final var msgIdsPerPartition = new ArrayList<List<MessageId>>();
+        for (int i = 0; i < numPartitions; i++) {
+            msgIdsPerPartition.add(new ArrayList<>());
+        }
+        for (int i = 0; i < numMessagesPerPartition * numPartitions; i++) {
+            var msgId = (MessageIdImpl) producer.send(i / numPartitions);
+            msgIdsPerPartition.get(msgId.getPartitionIndex()).add(msgId);
+        }
+
+        // Receive everything and leave it unacked: the messages delivered to the application are
+        // tracked for the ack-timeout redelivery
+        final var partition1 = topic + TopicName.PARTITIONED_TOPIC_SUFFIX + 1;
+        final var partition1UnackedIds = new HashSet<MessageId>();
+        for (int i = 0; i < numMessagesPerPartition * numPartitions; i++) {
+            Message<Integer> message = consumer.receive(5, TimeUnit.SECONDS);
+            Assert.assertNotNull(message, "Missing message " + i);
+            if (partition1.equals(((TopicMessageId) message.getMessageId()).getOwnerTopic())) {
+                partition1UnackedIds.add(message.getMessageId());
+            }
+        }
+        assertEquals(partition1UnackedIds.size(), numMessagesPerPartition);
+
+        // Seek partition 0: partition 1's unacked tracking must survive and redeliver on timeout
+        final var partition0 = topic + TopicName.PARTITIONED_TOPIC_SUFFIX + 0;
+        consumer.seek(TopicMessageId.create(partition0, msgIdsPerPartition.get(0).get(0)));
+
+        boolean partition1Redelivered = false;
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline && !partition1Redelivered) {
+            Message<Integer> message = consumer.receive(1, TimeUnit.SECONDS);
+            if (message != null && partition1UnackedIds.contains(message.getMessageId())) {
+                partition1Redelivered = true;
+            }
+        }
+        assertTrue(partition1Redelivered,
+                "The unacked messages of the partition that did not seek must be redelivered on ack timeout");
+    }
+
+    @Test(timeOut = 60000)
+    public void testSeekOnePartitionMaintainsOtherPartitionsOrderDuringConcurrentTraffic() throws Exception {
+        final var topic = TopicName.get(newTopicName()).toString();
+        final var numPartitions = 2;
+        admin.topics().createPartitionedTopic(topic, numPartitions);
+
+        @Cleanup final var producer = pulsarClient.newProducer(Schema.INT32)
+                .topic(topic)
+                .enableBatching(false)
+                .messageRouter(new MessageRouter() {
+                    int index = 0;
+                    @Override
+                    public int choosePartition(Message<?> msg, TopicMetadata metadata) {
+                        return index++ % metadata.numPartitions();
+                    }
+                })
+                .create();
+        @Cleanup final var consumer = pulsarClient.newConsumer(Schema.INT32)
+                .topic(topic)
+                .subscriptionName("sub")
+                .subscribe();
+
+        final var numMessagesPerPartition = 20;
+        final var msgIdsPerPartition = new ArrayList<List<MessageId>>();
+        for (int i = 0; i < numPartitions; i++) {
+            msgIdsPerPartition.add(new ArrayList<>());
+        }
+        for (int i = 0; i < numMessagesPerPartition * numPartitions; i++) {
+            var msgId = (MessageIdImpl) producer.send(i / numPartitions);
+            msgIdsPerPartition.get(msgId.getPartitionIndex()).add(msgId);
+        }
+        Awaitility.await().untilAsserted(() -> assertEquals(
+                ((MultiTopicsConsumerImpl<Integer>) consumer).numMessagesInQueue(),
+                numMessagesPerPartition * numPartitions));
+
+        // Seek partition 0 while partition 1 keeps receiving new messages, so messages of
+        // partition 1 are enqueued while the seek discards partition 0's buffered ones
+        final var partition0 = topic + TopicName.PARTITIONED_TOPIC_SUFFIX + 0;
+        final var seekFuture = consumer.seekAsync(
+                TopicMessageId.create(partition0, msgIdsPerPartition.get(0).get(0)));
+        final var newMessagesPerPartition = 20;
+        for (int i = 0; i < newMessagesPerPartition * numPartitions; i++) {
+            producer.sendAsync((numMessagesPerPartition + i / numPartitions));
+        }
+        producer.flush();
+        seekFuture.get(10, TimeUnit.SECONDS);
+
+        // Partition 0 replays after its first message; partition 1 must deliver its buffered
+        // messages and the new ones, in order and without losses
+        final var partition1Values = new ArrayList<Integer>();
+        Message<Integer> message;
+        while ((message = consumer.receive(5, TimeUnit.SECONDS)) != null) {
+            if (((TopicMessageId) message.getMessageId()).getOwnerTopic()
+                    .endsWith(TopicName.PARTITIONED_TOPIC_SUFFIX + 1)) {
+                partition1Values.add(message.getValue());
+            }
+        }
+        final var expectedPartition1Values = IntStream.rangeClosed(
+                0, numMessagesPerPartition + newMessagesPerPartition - 1).boxed()
+                .collect(Collectors.toList());
+        assertEquals(partition1Values, expectedPartition1Values,
+                "The messages of the partition that did not seek must stay in order, including the"
+                        + " ones enqueued while the seek ran");
+    }
+
+    @Test(timeOut = 60000)
+    public void testSeekFunctionSkipsTopicsWithNullPosition() throws Exception {
+        final var topic = TopicName.get(newTopicName()).toString();
+        final var numPartitions = 2;
+        admin.topics().createPartitionedTopic(topic, numPartitions);
+
+        @Cleanup final var producer = pulsarClient.newProducer(Schema.INT32)
+                .topic(topic)
+                .enableBatching(false)
+                .messageRouter(new MessageRouter() {
+                    int index = 0;
+                    @Override
+                    public int choosePartition(Message<?> msg, TopicMetadata metadata) {
+                        return index++ % metadata.numPartitions();
+                    }
+                })
+                .create();
+        @Cleanup final var consumer = pulsarClient.newConsumer(Schema.INT32)
+                .topic(topic)
+                .subscriptionName("sub")
+                .subscribe();
+
+        final var numMessagesPerPartition = 10;
+        for (int i = 0; i < numMessagesPerPartition * numPartitions; i++) {
+            producer.send(i / numPartitions);
+        }
+        Awaitility.await().untilAsserted(() -> assertEquals(
+                ((MultiTopicsConsumerImpl<Integer>) consumer).numMessagesInQueue(),
+                numMessagesPerPartition * numPartitions));
+
+        // Seek only partition 1 to the earliest position; the function returns null for
+        // partition 0, which must keep its buffered messages like a seek that skips it
+        consumer.seek(topicName -> topicName.endsWith(TopicName.PARTITIONED_TOPIC_SUFFIX + 1)
+                ? MessageId.earliest
+                : null);
+
+        final var valuesPerPartition = new HashMap<String, List<Integer>>();
+        for (int i = 0; i < numMessagesPerPartition * numPartitions; i++) {
+            Message<Integer> received = consumer.receive(5, TimeUnit.SECONDS);
+            Assert.assertNotNull(received, "Missing message " + i);
+            valuesPerPartition
+                    .computeIfAbsent(((TopicMessageId) received.getMessageId()).getOwnerTopic(),
+                            __ -> new ArrayList<>())
+                    .add(received.getValue());
+        }
+        Assert.assertNull(consumer.receive(1, TimeUnit.SECONDS), "No more messages are expected");
+        final var expectedValues = IntStream.rangeClosed(0, numMessagesPerPartition - 1).boxed()
+                .collect(Collectors.toList());
+        assertEquals(valuesPerPartition.get(topic + TopicName.PARTITIONED_TOPIC_SUFFIX + 0), expectedValues,
+                "The buffered messages of the topic the function returned null for must survive");
+        assertEquals(valuesPerPartition.get(topic + TopicName.PARTITIONED_TOPIC_SUFFIX + 1), expectedValues);
     }
 
     @Test(invocationCount = 10, timeOut = 30000)

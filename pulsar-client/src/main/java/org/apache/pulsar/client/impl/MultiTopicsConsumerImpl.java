@@ -113,6 +113,10 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
     // paused and their buffered messages discarded, so the other topics keep flowing while a
     // seek of a subset of the topics runs.
     private final Set<String> seekingTopics = ConcurrentHashMap.newKeySet();
+    // Serializes enqueues into the shared queue with the seek cleanup draining it: while the
+    // cleanup re-adds the buffered messages of the topics that did not seek, an enqueue for one
+    // of those topics waits here, so it cannot get ahead of its own buffered messages.
+    private final Object seekCleanupMutex = new Object();
     private final long startMessageRollbackDurationInSec;
     private final ConsumerInterceptors<T> internalConsumerInterceptors;
     MultiTopicsConsumerImpl(PulsarClientImpl client, ConsumerConfigurationData<T> conf,
@@ -293,7 +297,12 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
                 ClientCnx cnx = msgImpl.getCnx();
                 boolean isValidEpoch = isValidConsumerEpoch(msgImpl);
                 if (isValidEpoch && !skipDueToSeek) {
-                    messageReceived(consumer, msg);
+                    // The enqueue must not interleave with the seek cleanup draining the queue,
+                    // or a message of a partition that did not seek could get ahead of the
+                    // messages of that same partition re-added by the cleanup
+                    synchronized (seekCleanupMutex) {
+                        messageReceived(consumer, msg);
+                    }
                 } else if (!isValidEpoch) {
                     consumer.increaseAvailablePermits(cnx);
                 } else if (skipDueToSeek) {
@@ -828,7 +837,29 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
 
     @Override
     public CompletableFuture<Void> seekAsync(Function<String, Object> function) {
-        return seekAllAsync(consumer -> consumer.seekAsync(function));
+        if (function == null) {
+            return FutureUtil.failedFuture(new PulsarClientException("Function must be set"));
+        }
+        // Apply the function once per topic and skip the topics it returns null for, like a seek
+        // of a TopicMessageId skips the other partitions: their consumers do not seek, so their
+        // buffered messages and unacked tracker entries must survive.
+        Map<ConsumerImpl<T>, Object> seekPositions = new IdentityHashMap<>();
+        for (ConsumerImpl<T> consumer : consumers.values()) {
+            Object seekPosition = function.apply(consumer.getTopic());
+            if (seekPosition != null) {
+                seekPositions.put(consumer, seekPosition);
+            }
+        }
+        return seekAsyncInternal(seekPositions.keySet(), consumer -> {
+            Object seekPosition = seekPositions.get(consumer);
+            if (seekPosition instanceof MessageId messageId) {
+                return consumer.seekAsync(messageId);
+            } else if (seekPosition instanceof Long timestamp) {
+                return consumer.seekAsync(timestamp);
+            }
+            return FutureUtil.failedFuture(
+                    new PulsarClientException("Only support seek by messageId or timestamp"));
+        });
     }
 
     @Override
@@ -885,7 +916,7 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
         for (ConsumerImpl<T> consumer : consumersToSeek) {
             topics.add(consumer.getTopic());
             seekingTopics.add(consumer.getTopic());
-            removeTopicMessagesFromUnackedTracker(consumer.getTopic());
+            removePartitionMessagesFromUnackedTracker(consumer.getTopic());
         }
         clearIncomingMessagesForTopics(topics);
     }
@@ -912,25 +943,26 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
      * topics, which a seek of a subset of the topics must not drop: their consumers did not seek, so
      * there is nothing that would deliver the discarded messages again.
      *
-     * <p>The kept messages are drained and re-added, so they keep their relative order, though a
-     * message of another topic enqueued concurrently may end up before them.
+     * <p>Enqueues are blocked for the whole drain-and-re-add, so a message of a topic that did
+     * not seek cannot be added between the removal and the re-add and get ahead of that topic's
+     * own buffered messages: the kept messages keep their per-partition order.
      */
     private void clearIncomingMessagesForTopics(Set<String> topics) {
         if (topics.isEmpty()) {
             return;
         }
-        List<Message<T>> drainedMessages = new ArrayList<>();
-        Message<T> message;
-        while ((message = incomingMessages.poll()) != null) {
-            drainedMessages.add(message);
-        }
-        for (Message<T> drainedMessage : drainedMessages) {
-            if (drainedMessage.getMessageId() instanceof TopicMessageId topicMessageId
-                    && topics.contains(topicMessageId.getOwnerTopic())) {
-                discardIncomingMessage(drainedMessage);
-            } else {
-                incomingMessages.add(drainedMessage);
+        List<Message<T>> keptMessages = new ArrayList<>();
+        synchronized (seekCleanupMutex) {
+            Message<T> message;
+            while ((message = incomingMessages.poll()) != null) {
+                if (message.getMessageId() instanceof TopicMessageId topicMessageId
+                        && topics.contains(topicMessageId.getOwnerTopic())) {
+                    discardIncomingMessage(message);
+                } else {
+                    keptMessages.add(message);
+                }
             }
+            incomingMessages.addAll(keptMessages);
         }
     }
 
@@ -1046,6 +1078,20 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
             tracker.removeTopicMessages(topicName);
         } else if (unAckedMessageTracker instanceof UnAckedTopicMessageRedeliveryTracker tracker) {
             tracker.removeTopicMessages(topicName);
+        }
+    }
+
+    /**
+     * Removes the unacked tracker entries of one partition topic only, matched by the exact
+     * partition topic name. Unlike {@link #removeTopicMessagesFromUnackedTracker(String)}, the
+     * sibling partitions of the same partitioned topic keep their entries, so their ack-timeout
+     * redelivery keeps working: used when a seek applies to a subset of the partitions.
+     */
+    protected void removePartitionMessagesFromUnackedTracker(String partitionTopicName) {
+        if (unAckedMessageTracker instanceof UnAckedTopicMessageTracker tracker) {
+            tracker.removePartitionMessages(partitionTopicName);
+        } else if (unAckedMessageTracker instanceof UnAckedTopicMessageRedeliveryTracker tracker) {
+            tracker.removePartitionMessages(partitionTopicName);
         }
     }
 
