@@ -53,4 +53,31 @@ public class UnAckedTopicMessageTracker extends UnAckedMessageTracker {
         }
     }
 
+    /**
+     * Removes the messages of one partition topic only, matched by the exact partition topic
+     * name, unlike {@link #removeTopicMessages(String)} which matches every partition of the
+     * partitioned topic. Used when an operation applies to a single partition, like a seek of
+     * that partition, and the unacked tracking of the sibling partitions must survive.
+     */
+    public int removePartitionMessages(String partitionTopicName) {
+        writeLock.lock();
+        try {
+            int removed = 0;
+            Iterator<Entry<MessageId, HashSet<MessageId>>> iterator = messageIdPartitionMap.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Entry<MessageId, HashSet<MessageId>> entry = iterator.next();
+                MessageId messageId = entry.getKey();
+                if (messageId instanceof TopicMessageId topicMessageId
+                        && partitionTopicName.equals(topicMessageId.getOwnerTopic())) {
+                    entry.getValue().remove(messageId);
+                    iterator.remove();
+                    removed++;
+                }
+            }
+            return removed;
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
 }
